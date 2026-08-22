@@ -1,7 +1,18 @@
+"""Async engine and session factory.
+
+The engine is built once from ``settings.DATABASE_URL`` at import. Previously
+it could also be swapped at runtime by the setup wizard (``init_db``) because
+the DB URI arrived over HTTP and was written to a config file; the URI is now
+environment-supplied, so the engine is immutable for the process lifetime.
+"""
+
+from __future__ import annotations
+
 from collections.abc import AsyncGenerator
 
 import structlog
 from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -16,96 +27,74 @@ logger = structlog.get_logger(__name__)
 engine: AsyncEngine | None = None
 async_session_maker: async_sessionmaker[AsyncSession] | None = None
 
-def init_db(db_url: str):
+
+def init_db(db_url: str) -> None:
     global engine, async_session_maker
-    logger.info("initializing_database_engine_dynamically")
     engine = create_async_engine(
         db_url,
         echo=False,
         future=True,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
     )
     async_session_maker = async_sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False, autoflush=False
     )
+    logger.info("database_engine_initialized")
+
 
 if settings.DATABASE_URL:
     init_db(settings.DATABASE_URL)
 
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    if not async_session_maker:
+
+def require_session_maker() -> async_sessionmaker[AsyncSession]:
+    """Session factory or a clear error.
+
+    Several call sites used a bare ``assert`` for this, which is stripped
+    entirely under ``python -O`` and would surface as an opaque ``NoneType``
+    error instead of a diagnosable one.
+    """
+    if async_session_maker is None:
+        raise RuntimeError("DATABASE_NOT_CONFIGURED: set DATABASE_URL")
+    return async_session_maker
+
+
+async def get_db_session() -> AsyncGenerator[AsyncSession]:
+    if async_session_maker is None:
         raise HTTPException(status_code=503, detail="DATABASE_NOT_CONFIGURED")
     async with async_session_maker() as session:
         yield session
-from sqlalchemy import text
 
 
 async def check_db_ready() -> str:
-    """Check if database is ready.
-    Returns:
-        "ready": Database exists and tables are present with data
-        "no_tables": Database exists but tables are missing
-        "no_data": Tables exist but are empty (requires seeding)
-        "not_configured": Database URL not set
-        "error": Connection failed or other error
+    """Classify database readiness.
+
+    Returns one of: ``ready`` (migrated and seeded), ``no_data`` (migrated,
+    empty), ``no_tables`` (reachable, unmigrated), ``not_configured``,
+    ``error``.
     """
-    if not async_session_maker:
+    if async_session_maker is None:
         return "not_configured"
     try:
         async with async_session_maker() as session:
-             # Try to count roles to check both table existence and data presence
-             result = await session.execute(text("SELECT count(*) FROM role_agents"))
-             count = result.scalar()
-             if count == 0:
-                 return "no_data"
-             return "ready"
-    except Exception as e:
-        error_str = str(e).lower()
-        # Common patterns for missing tables in Postgres (asyncpg)
-        if "does not exist" in error_str or "undefinedtableerror" in error_str or "42p01" in error_str:
+            result = await session.execute(text("SELECT count(*) FROM role_agents"))
+            return "no_data" if result.scalar() == 0 else "ready"
+    except Exception as exc:
+        error_str = str(exc).lower()
+        if any(p in error_str for p in ("does not exist", "undefinedtableerror", "42p01")):
             logger.info("database_accessible_but_tables_missing")
             return "no_tables"
-        
-        logger.error("db_not_ready_check_failed", error=str(e), type=type(e).__name__)
+        logger.error("db_not_ready_check_failed", error=str(exc), type=type(exc).__name__)
         return "error"
 
 
-def _ensure_models_registered():
-    """Import all models to ensure metadata is populated for table creation/dropping."""
+def _ensure_models_registered():  # type: ignore[no-untyped-def]
+    """Import every model so ``Base.metadata`` is complete for Alembic autogenerate."""
+    import app.models.documents  # noqa: F401
+    import app.models.meetings  # noqa: F401
+    import app.models.roles  # noqa: F401
+    import app.models.system_settings  # noqa: F401
     from app.models.base import Base
-    import app.models.roles
-    import app.models.meetings
-    import app.models.documents
+
     return Base
-
-async def create_all_tables():
-    """Create all tables defined in the metadata."""
-    if engine is None:
-        logger.error("cannot_create_tables_engine_none")
-        return
-
-    Base = _ensure_models_registered()
-    
-    async with engine.begin() as conn:
-        if settings.DB_SCHEMA:
-            logger.info("ensuring_schema_exists", schema=settings.DB_SCHEMA)
-            await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {settings.DB_SCHEMA}"))
-        
-        logger.info("creating_all_tables_from_metadata")
-        await conn.run_sync(Base.metadata.create_all)
-        logger.info("all_tables_created_successfully")
-
-async def drop_all_tables():
-    if engine is None:
-        return
-
-    Base = _ensure_models_registered()
-
-    async with engine.begin() as conn:
-        if settings.DB_SCHEMA:
-            logger.info("dropping_entire_schema", schema=settings.DB_SCHEMA)
-            await conn.execute(text(f"DROP SCHEMA IF EXISTS {settings.DB_SCHEMA} CASCADE"))
-            await conn.execute(text(f"CREATE SCHEMA {settings.DB_SCHEMA}"))
-            logger.info("schema_recreated", schema=settings.DB_SCHEMA)
-        else:
-            await conn.run_sync(Base.metadata.drop_all)
-            logger.info("all_tables_dropped")

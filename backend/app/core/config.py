@@ -1,100 +1,96 @@
-import json
-import os
-from typing import Any
+"""Process configuration, sourced entirely from the environment.
 
-import structlog
-from pydantic_settings import BaseSettings
+Previously this module read a plaintext ``config.json`` off a PVC -- holding
+the Postgres password and both LLM API keys -- and re-parsed it from disk on
+*every* attribute access, including the ``/system/status`` poll each browser
+tab fires every few seconds. That file is gone.
 
-logger = structlog.get_logger(__name__)
+Configuration is now split by lifetime and sensitivity:
+
+* **Infrastructure** (this module): database URL, model endpoints and API
+  keys, CORS origins. Injected as environment variables from the
+  ``meetings-runtime`` Secret and ``meetings-config`` ConfigMap, read once at
+  import. Never written at runtime.
+* **Operator-tunable** (``app.services.settings_service``): prompts, turn
+  limits, temperatures, retrieval limits. Stored in the ``system_settings``
+  table and cached in-process.
+"""
+
+from __future__ import annotations
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "Meeting Simulator"
-    VERSION: str = "1.0.0"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
-    # Static Configuration
+    PROJECT_NAME: str = "Agentic Meetings"
+    VERSION: str = "0.2.0"
     DB_SCHEMA: str = "meetings"
-    CONFIG_FILE_PATH: str = "/app/data/config.json"
 
-    # Dynamic Configuration (from file/env)
-    _config_data: dict[str, Any] = {}
+    LOG_LEVEL: str = "INFO"
 
-    def _load_config_file(self) -> dict[str, Any]:
-        path = self.CONFIG_FILE_PATH
-        if not os.path.exists(path):
-            # Try local path during development
-            path = "config.json"
-            if not os.path.exists(path):
-                # Try old path for migration
-                old_path = "db_config.json"
-                if os.path.exists(old_path):
-                    path = old_path
-                else:
-                    return {}
+    # Explicit origins. The previous ``allow_origins=["*"]`` paired with
+    # ``allow_credentials=True`` is rejected by the CORS spec anyway, so it was
+    # both a hole and non-functional for credentialed requests.
+    ALLOWED_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error("failed_to_load_config_file", error=str(e))
-            return {}
+    DATABASE_URL: str | None = None
 
-    def save_config(self, data: dict[str, Any]) -> None:
-        path = self.CONFIG_FILE_PATH
-        if not os.path.join(os.path.dirname(path)):
-            # Fallback to local
-            path = "config.json"
+    INFERENCE_ENDPOINT: str | None = None
+    INFERENCE_API_KEY: str | None = None
+    INFERENCE_MODEL_NAME: str | None = None
+    INFERENCE_IGNORE_TLS: bool = False
 
-        try:
-            current = self._load_config_file()
-            # Filter out None values to avoid overriding existing config or defaults with nulls
-            sanitized = {k: v for k, v in data.items() if v is not None}
-            current.update(sanitized)
-            with open(path, "w") as f:
-                json.dump(current, f, indent=4)
-            logger.info("config_saved_successfully", path=path)
-        except Exception as e:
-            logger.error("failed_to_save_config_file", error=str(e))
+    EMBEDDING_ENDPOINT: str | None = None
+    EMBEDDING_API_KEY: str | None = None
+    EMBEDDING_MODEL_NAME: str | None = None
+    EMBEDDING_IGNORE_TLS: bool = False
 
-    def get_config_value(self, key: str, default: Any | None = None) -> Any | None:
-        config = self._load_config_file()
-        return config.get(key, default)
+    # Vector width must match the embedding model. Changing it once chunks
+    # exist is guarded by an Alembic migration.
+    EMBEDDING_DIM: int = 2048
+
+    # LangGraph checkpointing. The executor used to swallow any Postgres
+    # checkpointer failure and silently downgrade to an in-memory saver, which
+    # loses a meeting on restart while pretending to be durable. It now fails
+    # loudly unless this is explicitly set (local development only).
+    ALLOW_VOLATILE_CHECKPOINTS: bool = False
+
+    SANDBOX_NAMESPACE: str = "meetings-sandboxes"
+    SANDBOX_EXEC_NAMESPACE: str = "meetings-exec"
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def _split_origins(cls, v: object) -> object:
+        """Accept a comma-separated string so the value can come from a ConfigMap."""
+        if isinstance(v, str):
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def _normalize_driver(cls, v: object) -> object:
+        """Accept the URI forms operators actually paste and coerce to asyncpg."""
+        if not isinstance(v, str) or not v:
+            return v
+        for prefix in ("postgres://", "postgresql://"):
+            if v.startswith(prefix):
+                return "postgresql+asyncpg://" + v[len(prefix) :]
+        return v
 
     @property
-    def DATABASE_URL(self) -> str | None:
-        config = self._load_config_file()
-        uri = config.get("sqlalchemy_uri")
-        # Legacy support for db_config.json
-        if not uri and "user" in config:
-            uri = (
-                f"postgresql+asyncpg://{config['user']}:{config['password']}@"
-                f"{config['host']}:{config['port']}/{config['db']}"
-            )
+    def inference_configured(self) -> bool:
+        return bool(self.INFERENCE_ENDPOINT and self.INFERENCE_MODEL_NAME)
 
-        # Fallback to env if file doesn't have it
-        if not uri:
-            uri = os.getenv("DATABASE_URL")
-        return uri
+    @property
+    def embedding_configured(self) -> bool:
+        return bool(self.EMBEDDING_ENDPOINT and self.EMBEDDING_MODEL_NAME)
 
-    def get_system_settings(self) -> Any:
-        from app.core.network import normalize_v1_endpoint
-        from app.domain.settings import SystemSettingsBase
-        config = self._load_config_file()
-        # Only take non-None values to avoid overriding defaults with nulls from update payloads
-        active_config = {k: v for k, v in config.items() if v is not None}
-        defaults = SystemSettingsBase().model_dump()
-        merged = {**defaults, **active_config}
-        
-        # Normalize endpoints if present
-        if merged.get("inference_endpoint"):
-            merged["inference_endpoint"] = normalize_v1_endpoint(merged["inference_endpoint"])
-        if merged.get("embedding_endpoint"):
-            merged["embedding_endpoint"] = normalize_v1_endpoint(merged["embedding_endpoint"])
-            
-        return SystemSettingsBase(**merged)
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 settings = Settings()
-

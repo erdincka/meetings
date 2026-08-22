@@ -48,16 +48,22 @@ PROMPT_METADATA = {
         "title": "Supervisor Instruction",
         "description": "Determines how the supervisor chooses the next speaker.",
         "placeholders": ["{{OBJECTIVE}}", "{{AGENDA}}", "{{ATTENDEE LIST}}"],
-        "default": DEFAULT_SUPERVISOR_PROMPT
+        "default": DEFAULT_SUPERVISOR_PROMPT,
     },
     "agent_prompt": {
         "title": "Agent System Instruction",
         "description": "The base instruction for all participating agents.",
         "placeholders": [
-            "{{DISPLAY_NAME}}", "{{TITLE}}", "{{DEPARTMENT}}", 
-            "{{SUMMARY}}", "{{TONE}}", "{{COLLABORATION_STYLE}}",
-            "{{OBJECTIVE}}", "{{AGENDA}}", "{{ATTENDEE_LIST}}"
+            "{{DISPLAY_NAME}}",
+            "{{TITLE}}",
+            "{{DEPARTMENT}}",
+            "{{SUMMARY}}",
+            "{{TONE}}",
+            "{{COLLABORATION_STYLE}}",
+            "{{OBJECTIVE}}",
+            "{{AGENDA}}",
+            "{{ATTENDEE_LIST}}",
         ],
-        "default": DEFAULT_AGENT_PROMPT
-    }
+        "default": DEFAULT_AGENT_PROMPT,
+    },
 }

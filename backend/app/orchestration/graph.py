@@ -1,4 +1,3 @@
-
 import structlog
 from langgraph.graph import END, START, StateGraph
 
@@ -8,6 +7,7 @@ from app.orchestration.state import MeetingState
 from app.orchestration.supervisor import supervisor_node
 
 logger = structlog.get_logger(__name__)
+
 
 def build_meeting_graph(attendees: dict[str, RoleAgent]) -> StateGraph:
     """Builds the supervisor-led StateGraph based on selected attendees."""
@@ -37,10 +37,6 @@ def build_meeting_graph(attendees: dict[str, RoleAgent]) -> StateGraph:
     valid_targets = {id: id for id in attendees.keys()}
     valid_targets["FINISH"] = END
 
-    builder.add_conditional_edges(
-        "supervisor",
-        router,
-        valid_targets
-    )
+    builder.add_conditional_edges("supervisor", router, valid_targets)
 
     return builder

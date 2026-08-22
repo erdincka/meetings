@@ -12,6 +12,7 @@ def merge_list(a: list[Any], b: list[Any]) -> list[Any]:
         return a
     return a + b
 
+
 class MeetingState(TypedDict):
     meeting_id: str
     brief: str
