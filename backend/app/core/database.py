@@ -78,7 +78,15 @@ async def check_db_ready() -> str:
         return "not_configured"
     try:
         async with async_session_maker() as session:
-            result = await session.execute(text("SELECT count(*) FROM role_agents"))
+            # Schema-qualified deliberately. Models set
+            # Base.metadata.schema, so SQLAlchemy-generated queries are
+            # qualified, but this raw probe is not -- and appuser's default
+            # search_path ("$user", public) does not include the app schema.
+            # Unqualified, this reports "no_tables" forever against a fully
+            # migrated database.
+            result = await session.execute(
+                text(f"SELECT count(*) FROM {settings.DB_SCHEMA}.role_agents")
+            )
             return "no_data" if result.scalar() == 0 else "ready"
     except Exception as exc:
         error_str = str(exc).lower()

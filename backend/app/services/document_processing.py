@@ -67,7 +67,7 @@ async def process_document_background(doc_id: UUID, file_bytes: bytes, file_type
     try:
         chunks_data = process_file_content(file_bytes, file_type, str(doc_id))
 
-        async with database.async_session_maker() as session:
+        async with database.require_session_maker()() as session:
             texts = [c["text"] for c in chunks_data]
             if texts:
                 embeddings = await generate_embeddings(texts, session)

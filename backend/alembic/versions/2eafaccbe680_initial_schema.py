@@ -1,19 +1,17 @@
 """initial schema
 
-Revision ID: 0ec9c5d97da1
+Revision ID: 2eafaccbe680
 Revises: 
-Create Date: 2026-08-22 17:03:52.341075
+Create Date: 2026-08-22 22:27:56.349764
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
-from app.core.config import settings
 import pgvector.sqlalchemy
 
 
-revision: str = '0ec9c5d97da1'
+revision: str = '2eafaccbe680'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -21,7 +19,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # pgvector is mounted into the Postgres pod as a declarative CNPG
-    # ImageVolume extension (see deploy/bootstrap/cnpg-cluster.yaml), but the
+    # ImageVolume extension (deploy/bootstrap/cnpg-cluster.yaml), but the
     # extension still has to be created inside the database.
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
@@ -33,9 +31,9 @@ def upgrade() -> None:
     sa.Column('objective', sa.Text(), nullable=True),
     sa.Column('expectations', sa.Text(), nullable=True),
     sa.Column('agenda', sa.Text(), nullable=True),
-    sa.Column('default_selected_attendee_ids', sa.JSON(), nullable=True),
-    sa.Column('default_document_ids', sa.JSON(), nullable=True),
-    sa.Column('is_builtin', sa.Boolean(), nullable=True),
+    sa.Column('default_selected_attendee_ids', sa.JSON(), nullable=False),
+    sa.Column('default_document_ids', sa.JSON(), nullable=False),
+    sa.Column('is_builtin', sa.Boolean(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id'),
@@ -48,19 +46,19 @@ def upgrade() -> None:
     sa.Column('department', sa.String(length=100), nullable=False),
     sa.Column('seniority', sa.String(length=50), nullable=True),
     sa.Column('summary', sa.Text(), nullable=True),
-    sa.Column('responsibilities', sa.JSON(), nullable=True),
-    sa.Column('kpis', sa.JSON(), nullable=True),
-    sa.Column('priorities', sa.JSON(), nullable=True),
-    sa.Column('objectives', sa.JSON(), nullable=True),
+    sa.Column('responsibilities', sa.JSON(), nullable=False),
+    sa.Column('kpis', sa.JSON(), nullable=False),
+    sa.Column('priorities', sa.JSON(), nullable=False),
+    sa.Column('objectives', sa.JSON(), nullable=False),
     sa.Column('risk_tolerance', sa.String(length=50), nullable=True),
-    sa.Column('tone', sa.JSON(), nullable=True),
+    sa.Column('tone', sa.JSON(), nullable=False),
     sa.Column('collaboration_style', sa.String(length=100), nullable=True),
     sa.Column('challenge_style', sa.String(length=100), nullable=True),
-    sa.Column('allowed_shared_library_access', sa.Boolean(), nullable=True),
-    sa.Column('private_library_id', sa.UUID(), nullable=True),
+    sa.Column('allowed_shared_library_access', sa.Boolean(), nullable=False),
+    sa.Column('private_library_id', sa.UUID(), nullable=False),
     sa.Column('system_prompt', sa.Text(), nullable=True),
-    sa.Column('default_tools', sa.JSON(), nullable=True),
-    sa.Column('ui_metadata', sa.JSON(), nullable=True),
+    sa.Column('default_tools', sa.JSON(), nullable=False),
+    sa.Column('ui_metadata', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id'),
@@ -85,24 +83,24 @@ def upgrade() -> None:
     )
     op.create_table('meetings',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('status', sa.String(length=50), nullable=True),
+    sa.Column('status', sa.String(length=50), nullable=False),
     sa.Column('brief', sa.Text(), nullable=True),
     sa.Column('agenda', sa.Text(), nullable=True),
     sa.Column('objective', sa.Text(), nullable=True),
     sa.Column('expectations', sa.Text(), nullable=True),
-    sa.Column('selected_attendee_ids', sa.JSON(), nullable=True),
-    sa.Column('turn_limit', sa.Integer(), nullable=True),
-    sa.Column('current_turn', sa.Integer(), nullable=True),
+    sa.Column('selected_attendee_ids', sa.JSON(), nullable=False),
+    sa.Column('turn_limit', sa.Integer(), nullable=False),
+    sa.Column('current_turn', sa.Integer(), nullable=False),
     sa.Column('template_id', sa.UUID(), nullable=True),
-    sa.Column('meeting_log', sa.JSON(), nullable=True),
-    sa.Column('citations', sa.JSON(), nullable=True),
-    sa.Column('warnings', sa.JSON(), nullable=True),
+    sa.Column('meeting_log', sa.JSON(), nullable=False),
+    sa.Column('citations', sa.JSON(), nullable=False),
+    sa.Column('warnings', sa.JSON(), nullable=False),
     sa.Column('final_summary', sa.Text(), nullable=True),
     sa.Column('active_agent_id', sa.String(length=50), nullable=True),
-    sa.Column('stop_requested', sa.Boolean(), nullable=True),
-    sa.Column('terminated', sa.Boolean(), nullable=True),
-    sa.Column('uploaded_brief_docs', sa.JSON(), nullable=True),
-    sa.Column('settings_snapshot', sa.JSON(), nullable=True),
+    sa.Column('stop_requested', sa.Boolean(), nullable=False),
+    sa.Column('terminated', sa.Boolean(), nullable=False),
+    sa.Column('uploaded_brief_docs', sa.JSON(), nullable=False),
+    sa.Column('settings_snapshot', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['template_id'], ['meetings.meeting_templates.id'], ),
@@ -116,7 +114,7 @@ def upgrade() -> None:
     sa.Column('owner_agent_id', sa.UUID(), nullable=True),
     sa.Column('meeting_id', sa.UUID(), nullable=True),
     sa.Column('file_type', sa.String(length=50), nullable=True),
-    sa.Column('metadata_json', sa.JSON(), nullable=True),
+    sa.Column('metadata_json', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['meeting_id'], ['meetings.meetings.id'], ),
@@ -134,7 +132,7 @@ def upgrade() -> None:
     sa.Column('page_number', sa.String(length=50), nullable=True),
     sa.Column('text', sa.Text(), nullable=False),
     sa.Column('normalized_text', sa.Text(), nullable=True),
-    sa.Column('embedding', pgvector.sqlalchemy.vector.VECTOR(dim=settings.EMBEDDING_DIM), nullable=True),
+    sa.Column('embedding', pgvector.sqlalchemy.vector.VECTOR(dim=2048), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['document_id'], ['meetings.documents.id'], ondelete='CASCADE'),

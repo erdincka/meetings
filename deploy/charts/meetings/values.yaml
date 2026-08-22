@@ -1,0 +1,78 @@
+# Vanilla Kubernetes. No Istio, no Kyverno, no vendor CRDs.
+
+nameOverride: ""
+
+image:
+  registry: ""
+  pullPolicy: IfNotPresent
+
+backend:
+  image: meetings-backend:latest
+  # Pinned to one replica: meetings.py keeps the active-meeting registry in
+  # process memory, so a second replica would not see meetings owned by the
+  # first. Lifting this needs the lease-based ownership planned for Phase 2.
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: "1",  memory: 1Gi}
+
+frontend:
+  image: meetings-frontend:latest
+  replicas: 1
+  resources:
+    requests: {cpu: 50m,  memory: 128Mi}
+    limits:   {cpu: 500m, memory: 512Mi}
+
+database:
+  # CloudNativePG publishes a complete connection URI in its generated app
+  # Secret, so the chart consumes that key directly rather than assembling a
+  # URL from parts. Assembling it invites two failure modes: passwords with
+  # URL-significant characters need escaping, and Kubernetes only expands
+  # $(VAR) references to variables declared EARLIER in the env list, which is
+  # silent and easy to get wrong.
+  existingSecret: meetings-postgres-app
+  urlKey: uri
+
+inference:
+  # `external` = any OpenAI-compatible endpoint. `ollama` = in-cluster.
+  mode: external
+  endpoint: ""
+  modelName: ""
+  ignoreTls: false
+  embedding:
+    endpoint: ""
+    modelName: ""
+    ignoreTls: false
+    # Must match the embedding model's output width.
+    dimensions: 2048
+  # Credentials come from a Secret you create out of band. They are never
+  # templated into the chart.
+  existingSecret: meetings-runtime
+  apiKeyKey: INFERENCE_API_KEY
+  embeddingApiKeyKey: EMBEDDING_API_KEY
+
+ollama:
+  enabled: false
+  image: ollama/ollama:latest
+  model: qwen3:4b
+  persistence:
+    enabled: true
+    size: 20Gi
+  resources:
+    requests: {cpu: 500m, memory: 2Gi}
+    limits:   {cpu: "4",  memory: 8Gi}
+
+sandbox:
+  # Never hardcode gvisor in a template: hosts without runsc fall back to
+  # `crun` (user namespaces) or `runc`. See docs/sandbox-security-model.md.
+  runtimeClassName: gvisor
+  namespace: meetings-sandboxes
+  execNamespace: meetings-exec
+
+gateway:
+  enabled: true
+  className: envoy
+  host: meetings.localtest.me
+
+logLevel: INFO
+allowVolatileCheckpoints: false

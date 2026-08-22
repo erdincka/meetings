@@ -9,7 +9,8 @@ Credentials deliberately do NOT live here -- they come from the environment
 change at runtime through the UI.
 """
 
-from sqlalchemy import Boolean, Column, Float, Integer, String, Text
+from sqlalchemy import Boolean, Float, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
 
@@ -19,18 +20,20 @@ SETTINGS_ROW_ID = 1
 class SystemSettings(Base, TimestampMixin):
     __tablename__ = "system_settings"
 
-    id = Column(Integer, primary_key=True, default=SETTINGS_ROW_ID)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=SETTINGS_ROW_ID)
 
-    debug = Column(Boolean, nullable=False, default=False)
-    retrieval_limits_per_agent = Column(Integer, nullable=False, default=2)
-    max_evidence_per_message = Column(Integer, nullable=False, default=5)
-    default_turn_limit = Column(Integer, nullable=False, default=50)
-    cleanup_rules = Column(String(64), nullable=False, default="terminate_keeps_history")
+    debug: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    retrieval_limits_per_agent: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    max_evidence_per_message: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    default_turn_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    cleanup_rules: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="terminate_keeps_history"
+    )
 
     # Agent sampling temperature. agents.py hardcoded 0.7 while this field sat
     # unread in the UI; supervisor.py hardcoded 0.1. Both now read from here.
-    inference_temperature = Column(Float, nullable=False, default=0.7)
-    supervisor_temperature = Column(Float, nullable=False, default=0.1)
+    inference_temperature: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    supervisor_temperature: Mapped[float] = mapped_column(Float, nullable=False, default=0.1)
 
-    supervisor_prompt = Column(Text, nullable=True)
-    agent_prompt = Column(Text, nullable=True)
+    supervisor_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -18,7 +18,7 @@ class MeetingTemplateBase(BaseModel):
 
     @field_validator("default_selected_attendee_ids", "default_document_ids", mode="before")
     @classmethod
-    def none_to_list(cls, v):
+    def none_to_list(cls, v: object) -> object:
         return v or []
 
 
@@ -56,7 +56,7 @@ class MeetingBase(BaseModel):
 
     @field_validator("selected_attendee_ids", "uploaded_brief_docs", mode="before")
     @classmethod
-    def none_to_list(cls, v):
+    def none_to_list(cls, v: object) -> object:
         return v or []
 
 
@@ -79,12 +79,12 @@ class MeetingResponse(MeetingBase):
 
     @field_validator("meeting_log", "citations", "warnings", mode="before")
     @classmethod
-    def none_to_list_response(cls, v):
+    def none_to_list_response(cls, v: object) -> object:
         return v or []
 
     @field_validator("settings_snapshot", mode="before")
     @classmethod
-    def none_to_dict(cls, v):
+    def none_to_dict(cls, v: object) -> object:
         return v or {}
 
     created_at: datetime

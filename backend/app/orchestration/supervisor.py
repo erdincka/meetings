@@ -9,6 +9,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from app.orchestration.prompts import DEFAULT_SUPERVISOR_PROMPT
+from app.orchestration.recovery import as_text, recover_speaker_id
 from app.orchestration.state import MeetingState
 
 logger = structlog.get_logger(__name__)
@@ -130,7 +131,7 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
             historical_messages = [
                 msg
                 for msg in state.get("messages", [])
-                if isinstance(msg, AIMessage) and msg.content and msg.content.startswith("[")
+                if isinstance(msg, AIMessage) and as_text(msg.content).startswith("[")
             ]
 
             decision = await chain.ainvoke(
@@ -144,34 +145,23 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
             if decision is None:
                 raise ValueError("LLM returned empty or malformed structured output.")
 
-            next_speaker = decision.next_speaker.strip()
-            reasoning = decision.reasoning
+            # with_structured_output returns a model instance for most
+            # providers but a plain dict for some; handle both.
+            if isinstance(decision, dict):
+                next_speaker = str(decision.get("next_speaker", "")).strip()
+                reasoning = str(decision.get("reasoning", ""))
+            else:
+                next_speaker = str(decision.next_speaker).strip()
+                reasoning = str(decision.reasoning)
 
-            # Validation with Fallback matching
-            if next_speaker not in valid_ids:
-                logger.warning("invalid_id_from_supervisor", received=next_speaker)
-
-                # attempt to find by name or role matches if model returned a string instead of ID
-                normalized_received = next_speaker.lower()
-                found_id = None
-                for aid, a in attendees.items():
-                    # check display name, title, or if ID contains the received string
-                    if (
-                        normalized_received in a.display_name.lower()
-                        or normalized_received in a.title.lower()
-                        or normalized_received in aid.lower()
-                    ):
-                        found_id = aid
-                        break
-
-                if found_id:
-                    logger.info(
-                        "supervisor_id_recovered", original=next_speaker, recovered=found_id
-                    )
-                    next_speaker = found_id
-                else:
-                    logger.warning("supervisor_id_unrecoverable_fallback_to_finish")
-                    next_speaker = "FINISH"
+            # Small models routinely answer with a name or title instead of
+            # the UUID they were asked for. recover_speaker_id() resolves the
+            # unambiguous near-misses and returns FINISH otherwise, rather than
+            # routing the turn to an arbitrary attendee.
+            resolved = recover_speaker_id(next_speaker, set(valid_ids), attendees)
+            if resolved != next_speaker:
+                logger.info("supervisor_id_resolved", received=next_speaker, resolved=resolved)
+            next_speaker = resolved
 
             is_finish = next_speaker == "FINISH"
             detail = (
@@ -224,3 +214,25 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
                 ],
                 "final_summary": err_msg,
             }
+
+    # Unreachable in practice -- the loop returns on success and on the final
+    # attempt's failure -- but without it the function falls off the end and
+    # implicitly returns None, which the graph would treat as an empty state
+    # update and route nowhere. Fail closed instead.
+    logger.error("supervisor_exhausted_without_decision", meeting_id=meeting_id)
+    exhausted = "Supervisor exhausted all attempts without reaching a decision."
+    return {
+        "next_speaker": "FINISH",
+        "reasoning": exhausted,
+        "event_log": [
+            {
+                "type": "supervisor_spoke",
+                "agent_id": "supervisor",
+                "content": "[Supervisor] System Error Encountered.",
+                "reasoning": exhausted,
+                "private_reasoning": exhausted,
+                "is_conclusion": True,
+            }
+        ],
+        "final_summary": exhausted,
+    }

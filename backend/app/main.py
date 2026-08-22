@@ -119,7 +119,7 @@ async def readiness_check() -> JSONResponse:
             status="success" if ready else "error",
             message=f"database: {db_status}",
             data={"database": db_status},
-        ).model_dump(),
+        ).model_dump(mode="json"),
     )
 
 

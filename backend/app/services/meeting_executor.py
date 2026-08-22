@@ -122,7 +122,10 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
                 async with AsyncConnectionPool(
                     pg_url, max_size=5, kwargs={"autocommit": True}
                 ) as pool:
-                    checkpointer = AsyncPostgresSaver(pool)
+                    # AsyncPostgresSaver declares a dict row factory; the pool is
+                    # created with psycopg's default tuple factory. The saver sets
+                    # its own row factory per cursor, so this is safe at runtime.
+                    checkpointer = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
                     async with asyncio.timeout(10):
                         await checkpointer.setup()
 

@@ -1,0 +1,15 @@
+# Local kind cluster. Images are loaded into the node by Tilt, so never pull.
+image:
+  pullPolicy: Never
+
+backend:
+  image: meetings-backend:latest
+frontend:
+  image: meetings-frontend:latest
+
+gateway:
+  host: meetings.localtest.me
+
+# Observability is off by default: on a 12GB VM the RAM is better spent on
+# sandbox warm pools. Phase 5 adds the values file that turns it on.
+logLevel: DEBUG

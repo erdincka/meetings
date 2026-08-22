@@ -1,5 +1,7 @@
 import asyncio
 import random
+import uuid
+from typing import Any
 
 import structlog
 from sqlalchemy import func, select
@@ -56,7 +58,7 @@ async def seed_data() -> None:
         stmt = select(func.count()).select_from(RoleAgent)
         res = await session.execute(stmt)
         if res.scalar() == 0:
-            roles_data = [
+            roles_data: list[dict[str, str]] = [
                 {
                     "name": "Chief Executive Officer",
                     "title": "CEO",
@@ -138,7 +140,7 @@ async def seed_data() -> None:
                 },
             ]
 
-            role_ids = []
+            role_ids: list[uuid.UUID] = []
             gc_agent_id = None
             for r in roles_data:
                 role = RoleAgent(
@@ -169,7 +171,7 @@ async def seed_data() -> None:
         else:
             logger.info("seed_progress", detail="Roles already exist, skipping.")
             # We need role_ids and gc_agent_id for subsequent sections
-            role_ids = (await session.execute(select(RoleAgent.id))).scalars().all()
+            role_ids = list((await session.execute(select(RoleAgent.id))).scalars().all())
             gc_stmt = select(RoleAgent.id).where(RoleAgent.title == "GC")
             gc_agent_id = (await session.execute(gc_stmt)).scalar()
 
@@ -177,7 +179,7 @@ async def seed_data() -> None:
         stmt = select(func.count()).select_from(Document)
         res = await session.execute(stmt)
         if res.scalar() == 0:
-            docs_to_create = [
+            docs_to_create: list[dict[str, Any]] = [
                 {
                     "name": "Quality Incident Report #842",
                     "scope": "company",
@@ -202,7 +204,7 @@ async def seed_data() -> None:
                 },
             ]
 
-            default_doc_ids = []
+            default_doc_ids: list[str] = []
             for d in docs_to_create:
                 try:
                     doc = Document(
@@ -235,11 +237,11 @@ async def seed_data() -> None:
             logger.info("seed_progress", detail="Sample documents seeding process complete.")
         else:
             logger.info("seed_progress", detail="Documents already exist, skipping.")
-            default_doc_ids = (await session.execute(select(Document.id))).scalars().all()
-            default_doc_ids = [str(uid) for uid in default_doc_ids]
+            existing_ids = (await session.execute(select(Document.id))).scalars().all()
+            default_doc_ids = [str(uid) for uid in existing_ids]
 
         # 4. Templates
-        templates_data = [
+        templates_data: list[dict[str, Any]] = [
             {
                 "name": "Crisis Incident Response",
                 "description": "High-stakes executive alignment for urgent operational failures.",
@@ -318,8 +320,8 @@ async def seed_data() -> None:
         ]
 
         for t_data in templates_data:
-            stmt = select(MeetingTemplate).where(MeetingTemplate.name == t_data["name"])
-            existing = (await session.execute(stmt)).scalar()
+            tmpl_stmt = select(MeetingTemplate).where(MeetingTemplate.name == t_data["name"])
+            existing = (await session.execute(tmpl_stmt)).scalar()
             if existing:
                 for key, value in t_data.items():
                     setattr(existing, key, value)

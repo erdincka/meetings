@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "meetings.name" . }}-frontend
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "meetings.name" . }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "meetings.name" . }}
+        app.kubernetes.io/component: frontend
+    spec:
+      securityContext: {{- include "meetings.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: frontend
+          image: {{ include "meetings.image" (dict "registry" .Values.image.registry "image" .Values.frontend.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "meetings.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          volumeMounts:
+            - name: cache
+              mountPath: /app/.next/cache
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 2
+            failureThreshold: 45
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 20
+          resources: {{- toYaml .Values.frontend.resources | nindent 12 }}
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "meetings.name" . }}-frontend
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "meetings.name" . }}
+    app.kubernetes.io/component: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

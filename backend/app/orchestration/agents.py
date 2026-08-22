@@ -1,5 +1,4 @@
 import json
-import re
 
 import structlog
 from langchain_core.messages import AIMessage, ToolMessage
@@ -8,6 +7,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 from app.orchestration.prompts import DEFAULT_AGENT_PROMPT
+from app.orchestration.recovery import as_text, split_thought, strip_speaker_prefix
 from app.orchestration.state import MeetingState
 from app.orchestration.tools import create_retrieval_tool
 
@@ -79,7 +79,7 @@ def create_role_agent_node(agent_id: str):
         historical_messages = [
             msg
             for msg in state.get("messages", [])
-            if isinstance(msg, AIMessage) and msg.content and msg.content.startswith("[")
+            if isinstance(msg, AIMessage) and as_text(msg.content).startswith("[")
         ]
 
         agent = create_react_agent(llm, tools, prompt=sys_prompt)
@@ -90,9 +90,7 @@ def create_role_agent_node(agent_id: str):
 
         # Find the last AIMessage that has non-empty content
         ai_messages_with_content = [
-            msg
-            for msg in new_msgs
-            if isinstance(msg, AIMessage) and msg.content and msg.content.strip()
+            msg for msg in new_msgs if isinstance(msg, AIMessage) and as_text(msg.content).strip()
         ]
 
         if ai_messages_with_content:
@@ -112,29 +110,21 @@ def create_role_agent_node(agent_id: str):
         internal_events = []
         parsed_thought = ""
 
-        # Check for <thought> or <thinking> tag in the final message content
-        if final_message.content:
-            thought_match = re.search(
-                r"<(?:thought|thinking)>(.*?)</(?:thought|thinking)>",
-                final_message.content,
-                re.DOTALL,
-            )
-            if thought_match:
-                parsed_thought = thought_match.group(1).strip()
-                # Remove thought from final_message.content
-                final_message.content = re.sub(
-                    r"<(?:thought|thinking)>.*?</(?:thought|thinking)>",
-                    "",
-                    final_message.content,
-                    flags=re.DOTALL,
-                ).strip()
+        # Separate private reasoning from what is said out loud, so internal
+        # monologue never reaches the meeting transcript.
+        public_text, parsed_thought = split_thought(as_text(final_message.content))
+        final_message.content = public_text
 
         for msg in new_msgs:
             if isinstance(msg, AIMessage) and msg.tool_calls:
                 internal_events.append({"type": "tool_call", "tool_calls": msg.tool_calls})
             elif isinstance(msg, ToolMessage):
                 internal_events.append(
-                    {"type": "tool_result", "name": msg.name, "content": msg.content}
+                    {
+                        "type": "tool_result",
+                        "name": msg.name or "unknown",
+                        "content": as_text(msg.content),
+                    }
                 )
 
         # Combined reasoning: parsed thought + tool logs
@@ -154,7 +144,7 @@ def create_role_agent_node(agent_id: str):
         cleaned_content = final_message.content.strip() if final_message.content else ""
 
         # Remove any hallucinated prefixes from the LLM to prevent double-prefixing
-        cleaned_content = re.sub(r"^\[.*?\]\s*", "", cleaned_content).strip()
+        cleaned_content = strip_speaker_prefix(cleaned_content)
 
         if not cleaned_content:
             # If it was an AI message with tool calls but no text

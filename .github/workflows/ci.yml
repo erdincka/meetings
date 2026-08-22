@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Settings are read from the environment at import, so lint/test runs need
+  # deterministic values rather than whatever the runner happens to have.
+  DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/test
+  INFERENCE_ENDPOINT: http://inference.test/v1
+  INFERENCE_MODEL_NAME: test-model
+  EMBEDDING_ENDPOINT: http://embedding.test/v1
+  EMBEDDING_MODEL_NAME: test-embed
+
+jobs:
+  backend:
+    name: backend (lint, types, tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups --frozen
+
+      - name: ruff check
+        run: uv run ruff check app scripts tests
+
+      - name: ruff format
+        run: uv run ruff format --check app scripts tests alembic
+
+      # mypy ratchets per-package (see [[tool.mypy.overrides]]) rather than
+      # flipping strict on a codebase that has never been type-checked, where
+      # hundreds of findings would drown out the real ones.
+      - name: mypy
+        run: uv run mypy app
+
+      - name: pytest
+        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing
+
+  frontend:
+    name: frontend (lint, types)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - name: tsc
+        run: npx tsc --noEmit
+
+  charts:
+    name: charts (lint, schema)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: helm lint
+        run: helm lint deploy/charts/meetings
+
+      - name: install kubeconform
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      # Renders every values profile and validates against real API schemas,
+      # including the Gateway API CRDs.
+      - name: kubeconform
+        run: |
+          for f in values.yaml values-local.yaml values-ollama.yaml; do
+            echo "::group::$f"
+            helm template meetings deploy/charts/meetings -n meetings \
+              -f "deploy/charts/meetings/$f" \
+            | kubeconform -strict -summary -kubernetes-version 1.36.1 \
+                -schema-location default \
+                -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+            echo "::endgroup::"
+          done
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true

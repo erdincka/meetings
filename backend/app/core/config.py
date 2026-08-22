@@ -18,8 +18,10 @@ Configuration is now split by lifetime and sensitivity:
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -38,7 +40,13 @@ class Settings(BaseSettings):
     # Explicit origins. The previous ``allow_origins=["*"]`` paired with
     # ``allow_credentials=True`` is rejected by the CORS spec anyway, so it was
     # both a hole and non-functional for credentialed requests.
-    ALLOWED_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    # NoDecode is required: without it pydantic-settings JSON-decodes complex
+    # types straight from the environment *before* any validator runs, so a
+    # plain comma-separated value from a ConfigMap raises SettingsError at
+    # import and the process never starts.
+    ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:3000"]
+    )
 
     DATABASE_URL: str | None = None
 

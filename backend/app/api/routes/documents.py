@@ -64,7 +64,7 @@ async def upload_document(
     await session.commit()
     await session.refresh(new_doc)
 
-    background_tasks.add_task(process_document_background, new_doc.id, content, file_type)
+    background_tasks.add_task(process_document_background, new_doc.id, content, file_type or "txt")
 
     logger.info("document_upload_accepted", doc_id=str(new_doc.id), name=new_doc.document_name)
 
