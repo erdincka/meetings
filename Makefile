@@ -42,6 +42,7 @@ bootstrap: ## Install platform prerequisites (idempotent)
 	$(HELM) upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
 	  -n envoy-gateway-system --create-namespace --wait --timeout 8m
 	$(KUBECTL) apply -f deploy/bootstrap/gatewayclass.yaml
+	$(KUBECTL) create namespace meetings --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) apply --server-side \
 	  -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX_VER)/sandbox-with-extensions.yaml
 	$(KUBECTL) -n agent-sandbox-system rollout status deploy/agent-sandbox-controller --timeout=5m
@@ -82,7 +83,8 @@ status: ## Show cluster state at a glance
 
 images: ## Build app images and load them into the kind cluster
 	docker build --target runtime -t meetings-backend:latest backend
-	kind load docker-image meetings-backend:latest --name $(CLUSTER)
+	docker build --target runtime -t meetings-frontend:latest frontend
+	kind load docker-image meetings-backend:latest meetings-frontend:latest --name $(CLUSTER)
 
 deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	$(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
@@ -94,10 +96,12 @@ seed: ## Load reference personas, documents and templates
 
 # ---------------------------------------------------------------- quality
 
-lint: ## ruff + format check + mypy + helm/kubeconform
+lint: ## ruff + format + mypy + eslint + tsc + helm/kubeconform
 	cd backend && uv run ruff check app scripts tests
 	cd backend && uv run ruff format --check app scripts tests alembic
 	cd backend && uv run mypy app scripts
+	cd frontend && npm run lint
+	cd frontend && npx tsc --noEmit
 	$(MAKE) chart-validate
 
 test: ## Backend unit tests with coverage
