@@ -38,9 +38,15 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret }}
                   key: {{ .Values.database.urlKey }}
-          envFrom:
-            - configMapRef:
-                name: {{ include "meetings.name" . }}-config
+            # Set explicitly rather than envFrom the ConfigMap: this Job is a
+            # pre-install hook, and Helm creates hook resources before the
+            # release's normal resources, so the ConfigMap does not exist yet.
+            # EMBEDDING_DIM is the only value the migration actually reads --
+            # it sizes the pgvector column.
+            - name: EMBEDDING_DIM
+              value: {{ .Values.inference.embedding.dimensions | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp

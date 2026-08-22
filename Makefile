@@ -10,7 +10,8 @@ NODE_IMAGE     ?= kindest-node-runsc:v1.36.1
 AGENT_SANDBOX_VER ?= v0.5.6
 
 .DEFAULT_GOAL := help
-.PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox deploy lint test e2e status
+.PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox \
+        smoke-pgvector deploy images lint test check migrate seed status
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -76,3 +77,43 @@ status: ## Show cluster state at a glance
 	@$(KUBECTL) get nodes -o wide
 	@$(KUBECTL) get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
 	@$(KUBECTL) -n meetings get cluster,pods
+
+# ---------------------------------------------------------------- app
+
+images: ## Build app images and load them into the kind cluster
+	docker build --target runtime -t meetings-backend:latest backend
+	kind load docker-image meetings-backend:latest --name $(CLUSTER)
+
+deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
+	$(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
+	  -f deploy/charts/meetings/values-local.yaml --wait --timeout 6m
+
+seed: ## Load reference personas, documents and templates
+	$(KUBECTL) -n meetings exec deploy/meetings-backend -- \
+	  python -c "import asyncio; from scripts.seed import seed_data; asyncio.run(seed_data())"
+
+# ---------------------------------------------------------------- quality
+
+lint: ## ruff + format check + mypy + helm/kubeconform
+	cd backend && uv run ruff check app scripts tests
+	cd backend && uv run ruff format --check app scripts tests alembic
+	cd backend && uv run mypy app scripts
+	$(MAKE) chart-validate
+
+test: ## Backend unit tests with coverage
+	cd backend && uv run pytest tests/unit -v --cov=app --cov-report=term-missing
+
+chart-validate: ## Render every values profile and validate against API schemas
+	@for f in values.yaml values-local.yaml values-ollama.yaml; do \
+	  echo ">> $$f"; \
+	  helm template meetings deploy/charts/meetings -n meetings \
+	    -f deploy/charts/meetings/$$f \
+	  | kubeconform -strict -summary -kubernetes-version 1.36.1 \
+	      -schema-location default \
+	      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'; \
+	done
+
+check: lint test ## Everything CI runs
+
+migrate-check: ## Fail if the ORM has drifted from the migrations
+	cd backend && uv run alembic check

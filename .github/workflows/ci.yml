@@ -22,6 +22,21 @@ jobs:
   backend:
     name: backend (lint, types, tests)
     runs-on: ubuntu-latest
+    # A real Postgres with pgvector, so the migration and drift checks below
+    # exercise the actual schema rather than being skipped.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: backend
@@ -44,8 +59,21 @@ jobs:
       - name: mypy
         run: uv run mypy app
 
+      # The floor locks in current coverage so it cannot regress. It is
+      # deliberately low: unit tests cover the pure logic extracted in Phase 1
+      # (model-output recovery, config parsing, settings contract), while most
+      # remaining code is I/O-bound route and orchestration work. Phase 2's
+      # fake-sandbox integration harness is what raises this materially.
       - name: pytest
-        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing
+        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing --cov-fail-under=8
+
+      - name: alembic upgrade
+        run: uv run alembic upgrade head
+
+      # Fails if the ORM has drifted from the migrations -- the exact problem
+      # that surfaced when the models moved to typed declarative.
+      - name: alembic drift check
+        run: uv run alembic check
 
   frontend:
     name: frontend (lint, types)
