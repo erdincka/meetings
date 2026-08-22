@@ -191,7 +191,11 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
     }
   }, [roles, roleMap])
 
-  const handleStop = () => socket?.send(JSON.stringify({ command: 'stop_meeting' }))
+  // NOTE: the backend accepts a 'stop_meeting' command for a graceful
+  // end-of-turn stop, but nothing writes stop_requested into graph state, so
+  // the in-graph stop path is unreachable and only task cancellation works.
+  // Phase 2 wires this properly along with the sandbox RPC path; a button that
+  // silently fails to stop the meeting would be worse than no button.
   const handleTerminate = () => socket?.send(JSON.stringify({ command: 'terminate_meeting' }))
 
   const colorsRef = useRef<Record<string, string>>({})
