@@ -11,7 +11,7 @@ AGENT_SANDBOX_VER ?= v0.5.6
 
 .DEFAULT_GOAL := help
 .PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox \
-        smoke-pgvector deploy images lint test check migrate seed status
+        smoke-pgvector deploy images lint test check security migrate seed status
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -117,7 +117,13 @@ chart-validate: ## Render every values profile and validate against API schemas
 	      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'; \
 	done
 
-check: lint test ## Everything CI runs
+check: lint test security ## Everything CI runs
 
 migrate-check: ## Fail if the ORM has drifted from the migrations
 	cd backend && uv run alembic check
+
+security: ## Secret and vulnerability scan, same as CI
+	gitleaks detect --source . --redact --no-banner --exit-code 1
+	docker run --rm -v "$$PWD:/src" -w /src aquasec/trivy:latest fs \
+	  --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+	  --scanners vuln,secret,misconfig --no-progress .

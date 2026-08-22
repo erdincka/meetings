@@ -135,11 +135,17 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz" \
             | tar -xz -C /usr/local/bin gitleaks
           gitleaks detect --source . --redact --no-banner --exit-code 1
+      # Run from the published image rather than the action. The action
+      # downloads a binary at run time and failed with a TLS error (curl 35),
+      # and a flaky download is a poor foundation for the one job whose purpose
+      # is supply-chain hygiene. Suppressions live in .trivyignore, justified
+      # individually.
       - name: trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src aquasec/trivy:latest fs \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --scanners vuln,secret,misconfig \
+            --no-progress \
+            .

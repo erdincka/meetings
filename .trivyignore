@@ -1,0 +1,12 @@
+# Trivy suppressions. Each entry must justify itself.
+
+# DS-0002: "Image user should not be 'root'".
+#
+# Applies to deploy/kind/node-image/Dockerfile, which extends kindest/node.
+# That image *is* a Kubernetes node: it runs kubelet, containerd and runsc, all
+# of which require root inside the node container. Adding a USER directive would
+# stop the cluster from starting.
+#
+# The application images this project actually ships (backend, frontend) run as
+# UID 1001 and are not covered by this suppression.
+DS-0002

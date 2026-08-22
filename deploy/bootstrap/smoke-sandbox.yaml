@@ -23,9 +23,20 @@ spec:
           operator: Equal
           value: sandbox
           effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: runtime
           image: python:3.13-slim
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           command: ["python3", "-m", "http.server", "8080"]
           ports:
             - containerPort: 8080
