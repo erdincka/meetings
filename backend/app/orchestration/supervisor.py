@@ -66,7 +66,9 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
     attendees = config["configurable"]["attendees"]
 
     llm_params = {
-        "api_key": model_settings.inference_api_key,
+        # Ollama and other local providers serve an OpenAI-compatible API with
+        # no authentication, but the client will not construct without a key.
+        "api_key": model_settings.inference_api_key or "not-required",
         "base_url": model_settings.inference_endpoint,
         "model": model_settings.inference_model_name,
         "temperature": 0.1,  # Lower temperature for better structural adherence

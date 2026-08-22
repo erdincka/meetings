@@ -9,6 +9,9 @@
 #   scripts/with-db.sh uv run alembic upgrade head
 set -euo pipefail
 
+# Rancher Desktop's shims are not always on PATH in non-login shells.
+export PATH="$HOME/.rd/bin:/opt/homebrew/bin:$PATH"
+
 NS=${NS:-meetings}
 LOCAL_PORT=${LOCAL_PORT:-55432}
 CTX=${KCTX:-kind-meetings}

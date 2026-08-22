@@ -26,12 +26,19 @@ spec:
       initContainers:
         - name: pull-model
           image: {{ .Values.ollama.image }}
+          imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "-c"]
           args:
             - |
               ollama serve &
               until ollama list >/dev/null 2>&1; do sleep 1; done
+              # Both models: the chat model drives personas and the supervisor,
+              # the embedding model backs retrieval. Pulling only the first
+              # leaves the app reporting "not ready" for a non-obvious reason.
               ollama pull {{ .Values.ollama.model }}
+              {{- if .Values.inference.embedding.modelName }}
+              ollama pull {{ .Values.inference.embedding.modelName }}
+              {{- end }}
           env:
             - name: OLLAMA_MODELS
               value: /models
@@ -41,6 +48,7 @@ spec:
       containers:
         - name: ollama
           image: {{ .Values.ollama.image }}
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 11434

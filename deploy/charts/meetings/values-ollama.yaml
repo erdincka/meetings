@@ -1,16 +1,30 @@
 # Fully local inference: no API key, nothing leaves the cluster.
 #
-# Trade-off: a resident model competes with sandbox warm pools for memory.
-# On a 12GB VM keep the model small and cap meetings at ~3 attendees.
+# Trade-off: a resident model competes with sandbox warm pools for memory. The
+# defaults here are sized for a 12GB VM running two warm persona sandboxes, so
+# the model is deliberately small. Quality is noticeably below a hosted
+# frontier model -- small models in particular struggle with the supervisor's
+# structured output, which is why recover_speaker_id() exists.
 inference:
   mode: ollama
+  modelName: qwen3:1.7b
   embedding:
     modelName: nomic-embed-text
+    # Must match the model's output width, and the vector column is created at
+    # this size by the initial migration. Changing it needs a fresh database.
     dimensions: 768
 
 ollama:
   enabled: true
-  model: qwen3:4b
+  model: qwen3:1.7b
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests: {cpu: 500m, memory: 2Gi}
+    limits:   {cpu: "3",  memory: 5Gi}
 
 image:
   pullPolicy: Never
+
+logLevel: DEBUG
