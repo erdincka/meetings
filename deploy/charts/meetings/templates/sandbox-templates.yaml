@@ -1,0 +1,133 @@
+{{/*
+Capability profiles.
+
+One runtime image serves every profile. What a given sandbox may actually do is
+decided here -- the mounted capability file, the ServiceAccount it runs as, and
+(from Phase 3) its NetworkPolicy and Secret mounts -- not by which image it
+runs. That separation is the point of the whole design, so it is worth stating
+plainly rather than burying in values.
+
+Phase 2 ships the baseline profile only. Phase 3 adds analyst, counsel,
+strategist and chief, which is where the least-privilege story becomes visible.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: persona-baseline
+  namespace: {{ .Values.sandbox.namespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: persona-baseline-capabilities
+  namespace: {{ .Values.sandbox.namespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+data:
+  # The runtime intersects the backend's grant with this list, so a compromised
+  # or buggy backend cannot enable a tool this profile was not provisioned for.
+  capabilities: |
+    retrieve_documents
+---
+# SandboxTemplate and SandboxWarmPool are extension CRDs and live in
+# extensions.agents.x-k8s.io. Only the core Sandbox kind is in agents.x-k8s.io.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: persona-baseline
+  namespace: {{ .Values.sandbox.namespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  # Publishes a per-sandbox Service. The backend reaches persona runtimes over
+  # cluster DNS; the Sandbox Router is only needed from outside the cluster,
+  # where port-forward is unusable because it is incompatible with gVisor.
+  service: true
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "meetings.name" . }}
+        app.kubernetes.io/component: persona-sandbox
+    spec:
+      serviceAccountName: persona-baseline
+      # Never hardcode gvisor: hosts without runsc fall back to crun (user
+      # namespaces) or runc. See docs/sandbox-security-model.md.
+      runtimeClassName: {{ .Values.sandbox.runtimeClassName }}
+      automountServiceAccountToken: true
+      nodeSelector:
+        node-role: sandbox
+      tolerations:
+        - key: node-role
+          operator: Equal
+          value: sandbox
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runtime
+          image: {{ include "meetings.image" (dict "registry" .Values.image.registry "image" .Values.sandbox.runtimeImage) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: BACKEND_INTERNAL_URL
+              value: "http://{{ include "meetings.name" . }}-backend.{{ .Release.Namespace }}.svc:8000"
+            - name: SANDBOX_CAPABILITY_FILE
+              value: /etc/sandbox/capabilities
+            - name: INFERENCE_API_KEY_FILE
+              value: /etc/sandbox/secrets/inference-api-key
+          volumeMounts:
+            - name: capabilities
+              mountPath: /etc/sandbox
+              readOnly: true
+            {{- if ne .Values.inference.mode "ollama" }}
+            - name: inference-key
+              mountPath: /etc/sandbox/secrets
+              readOnly: true
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          resources: {{- toYaml .Values.sandbox.profiles.baseline.resources | nindent 12 }}
+      volumes:
+        - name: capabilities
+          configMap:
+            name: persona-baseline-capabilities
+            items:
+              - key: capabilities
+                path: capabilities
+        {{- if ne .Values.inference.mode "ollama" }}
+        - name: inference-key
+          secret:
+            secretName: {{ .Values.inference.existingSecret }}
+            optional: true
+            items:
+              - key: {{ .Values.inference.apiKeyKey }}
+                path: inference-api-key
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: persona-baseline
+  namespace: {{ .Values.sandbox.namespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  # Pre-warmed so no turn ever pays a cold gVisor pod start, which is seconds
+  # rather than the few hundred milliseconds a warm claim costs.
+  replicas: {{ .Values.sandbox.profiles.baseline.warmReplicas }}
+  sandboxTemplateRef:
+    name: persona-baseline

@@ -82,9 +82,12 @@ status: ## Show cluster state at a glance
 # ---------------------------------------------------------------- app
 
 images: ## Build app images and load them into the kind cluster
+	bash sandbox/runtime/sync-shared.sh
 	docker build --target runtime -t meetings-backend:latest backend
 	docker build --target runtime -t meetings-frontend:latest frontend
-	kind load docker-image meetings-backend:latest meetings-frontend:latest --name $(CLUSTER)
+	docker build --target runtime -t meetings-persona-runtime:latest sandbox/runtime
+	kind load docker-image meetings-backend:latest meetings-frontend:latest \
+	  meetings-persona-runtime:latest --name $(CLUSTER)
 
 deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	$(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
@@ -118,6 +121,7 @@ chart-validate: ## Render every values profile and validate against API schemas
 	    -f deploy/charts/meetings/$$f \
 	  | kubeconform -strict -summary -kubernetes-version 1.36.1 \
 	      -schema-location default \
+	      -schema-location 'deploy/schemas/{{ .ResourceKind }}-{{ .Group }}-{{ .ResourceAPIVersion }}.json' \
 	      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'; \
 	done
 

@@ -68,6 +68,19 @@ sandbox:
   runtimeClassName: gvisor
   namespace: meetings-sandboxes
   execNamespace: meetings-exec
+  runtimeImage: meetings-persona-runtime:latest
+
+  # One image, many profiles. What each profile may do is set by its
+  # SandboxTemplate -- capability file, ServiceAccount, NetworkPolicy, Secrets --
+  # not by the image. Phase 3 adds analyst, counsel, strategist and chief.
+  profiles:
+    baseline:
+      # Warm, so no turn pays a cold gVisor pod start (seconds, versus a few
+      # hundred milliseconds for a warm claim).
+      warmReplicas: 2
+      resources:
+        requests: {cpu: 100m, memory: 256Mi}
+        limits:   {cpu: "1",  memory: 768Mi}
 
 gateway:
   enabled: true

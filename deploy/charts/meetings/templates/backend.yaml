@@ -22,6 +22,8 @@ spec:
         # Restart on config change so a settings edit actually takes effect.
         checksum/config: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
     spec:
+      # Needed to claim sandboxes and to resolve caller identity via TokenReview.
+      serviceAccountName: {{ include "meetings.name" . }}-backend
       securityContext: {{- include "meetings.podSecurityContext" . | nindent 8 }}
       containers:
         - name: backend
