@@ -1,0 +1,46 @@
+# GATE: proves the sandbox RuntimeClass is REALLY gVisor.
+#
+# We assert on /proc/version, not on the pod merely reaching Ready. A
+# misconfigured RuntimeClass handler silently falls back to runc on some
+# setups, which would give a green pod and an entirely fake security story.
+# gVisor's sentry reports a distinctive kernel string.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvisor-smoke
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      runtimeClassName: gvisor
+      restartPolicy: Never
+      # Run the gate where sandboxes actually run: the tainted sandbox worker.
+      nodeSelector:
+        node-role: sandbox
+      tolerations:
+        - key: node-role
+          operator: Equal
+          value: sandbox
+          effect: NoSchedule
+      containers:
+        - name: probe
+          image: busybox:1.37
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "kernel: $(cat /proc/version)"
+              if ! grep -qi gvisor /proc/version; then
+                echo "FAIL: not running under gVisor -- RuntimeClass silently fell back to runc"
+                exit 1
+              fi
+              echo "GVISOR-OK"
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}

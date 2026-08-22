@@ -1,0 +1,34 @@
+# GATE 2: proves the Agent Sandbox control plane actually works end to end --
+# CRD accepted, controller reconciles, pod lands on the sandbox node under
+# gVisor, and the per-sandbox Service is reachable by DNS from in-cluster.
+#
+# Reaching a sandbox by its status.serviceFQDN is how the backend will talk to
+# persona runtimes. kubectl port-forward is NOT usable here (incompatible with
+# gVisor); external access goes through the Sandbox Router instead.
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: smoke-sandbox
+  namespace: meetings-sandboxes
+spec:
+  service: true
+  shutdownPolicy: Delete
+  podTemplate:
+    spec:
+      runtimeClassName: gvisor
+      nodeSelector:
+        node-role: sandbox
+      tolerations:
+        - key: node-role
+          operator: Equal
+          value: sandbox
+          effect: NoSchedule
+      containers:
+        - name: runtime
+          image: python:3.13-slim
+          command: ["python3", "-m", "http.server", "8080"]
+          ports:
+            - containerPort: 8080
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits:   {cpu: 500m, memory: 256Mi}

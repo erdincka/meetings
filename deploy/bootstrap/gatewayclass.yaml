@@ -1,0 +1,13 @@
+# Envoy Gateway installs the Gateway API CRDs and its controller, but does not
+# create a GatewayClass -- that is left to the platform owner.
+#
+# This is precisely what was missing on the k3s cluster this replaces: the
+# Gateway API CRDs were present (installed by Traefik) but there was no
+# GatewayClass and Traefik was never started with --providers.kubernetesgateway,
+# so the whole Gateway API surface was inert.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
