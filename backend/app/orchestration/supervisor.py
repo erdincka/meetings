@@ -9,8 +9,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from app.orchestration.prompts import DEFAULT_SUPERVISOR_PROMPT
-from app.orchestration.recovery import as_text, recover_speaker_id
-from app.orchestration.state import MeetingState
+from app.orchestration.recovery import recover_speaker_id
+from app.orchestration.state import MeetingState, public_transcript
 
 logger = structlog.get_logger(__name__)
 
@@ -128,11 +128,7 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
         try:
             logger.info("supervisor_invoking_llm", meeting_id=meeting_id, attempt=attempt)
             # Use only public conversational history (chatter) to decide next speaker
-            historical_messages = [
-                msg
-                for msg in state.get("messages", [])
-                if isinstance(msg, AIMessage) and as_text(msg.content).startswith("[")
-            ]
+            historical_messages = list(public_transcript(state.get("messages", [])))
 
             decision = await chain.ainvoke(
                 {

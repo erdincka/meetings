@@ -21,7 +21,10 @@ def build_meeting_graph(attendees: dict[str, RoleAgent]) -> StateGraph:
     # Add agents and edge back to supervisor
     for agent_id in attendees.keys():
         node_func = create_role_agent_node(agent_id)
-        builder.add_node(agent_id, node_func)
+        # LangGraph's node protocol is a broad union that an explicitly typed
+        # async callable does not structurally satisfy; it is invoked correctly
+        # at runtime.
+        builder.add_node(agent_id, node_func)  # type: ignore[arg-type]
         builder.add_edge(agent_id, "supervisor")
 
     builder.add_edge(START, "supervisor")

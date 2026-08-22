@@ -1,169 +1,215 @@
-import json
+"""Attendee nodes.
+
+Each node used to host a full ReAct loop: it built a ChatOpenAI client,
+constructed tools, ran the agent, and parsed the model's output -- roughly 130
+lines, all executing in the backend process alongside the database engine and
+the master inference key.
+
+The loop now runs inside that attendee's own gVisor-isolated sandbox. What
+remains here is the proxy: claim a sandbox, bind the persona once, issue one
+turn, map the result into graph state.
+
+Keeping the whole loop remote (rather than RPC-ing individual tool calls back)
+means model-chosen tool arguments never reach this process, and a four-step turn
+costs one round trip instead of four.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import structlog
-from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 
 from app.orchestration.prompts import DEFAULT_AGENT_PROMPT
-from app.orchestration.recovery import as_text, split_thought, strip_speaker_prefix
-from app.orchestration.state import MeetingState
-from app.orchestration.tools import create_retrieval_tool
+from app.orchestration.protocol import (
+    Attendee,
+    ModelConfig,
+    PersonaBindRequest,
+    PersonaSpec,
+    TurnLimits,
+    TurnRequest,
+    Utterance,
+)
+from app.orchestration.state import MeetingState, make_utterance, public_transcript
+from app.sandbox.client import PersonaSandboxClient
+from app.sandbox.manager import SandboxUnavailableError, manager
 
 logger = structlog.get_logger(__name__)
 
 
-def create_role_agent_node(agent_id: str):
-    """Creates a LangGraph node function localized for a specific agent."""
+def _persona_from_role(role: Any) -> PersonaSpec:
+    """Map a RoleAgent row onto the wire persona.
 
-    async def agent_node(state: MeetingState, config: RunnableConfig) -> dict:
-        attendees = config["configurable"]["attendees"]
-        my_role = attendees.get(agent_id)
-        if not my_role:
+    Every field here was persisted and editable in the UI while reaching no
+    prompt at all before Phase 2.
+    """
+    return PersonaSpec(
+        display_name=role.display_name,
+        title=role.title,
+        department=role.department,
+        summary=role.summary,
+        seniority=role.seniority,
+        responsibilities=list(role.responsibilities or []),
+        kpis=list(role.kpis or []),
+        objectives=list(role.objectives or []),
+        priorities=list(role.priorities or []),
+        risk_tolerance=role.risk_tolerance,
+        tone=list(role.tone or []) if isinstance(role.tone, list) else [],
+        collaboration_style=role.collaboration_style,
+        challenge_style=role.challenge_style,
+        allowed_shared_library_access=bool(role.allowed_shared_library_access),
+    )
+
+
+def create_role_agent_node(
+    agent_id: str,
+) -> Callable[[MeetingState, RunnableConfig], Awaitable[dict[str, Any]]]:
+    """Build the graph node for one attendee."""
+
+    async def agent_node(state: MeetingState, config: RunnableConfig) -> dict[str, Any]:
+        configurable = config["configurable"]
+        attendees: dict[str, Any] = configurable["attendees"]
+        role = attendees.get(agent_id)
+        if role is None:
+            logger.warning("unknown_attendee_node", agent_id=agent_id)
             return {}
 
-        model_settings = config["configurable"]["model_settings"]
+        settings_obj = configurable["model_settings"]
+        meeting_id = state.get("meeting_id", "")
+        turn_no = state.get("current_turn", 0)
 
-        llm_params = {
-            "api_key": model_settings.inference_api_key,
-            "base_url": model_settings.inference_endpoint,
-            "model": model_settings.inference_model_name,
-            "temperature": 0.7,
-            "timeout": 60,
-        }
+        # Idempotency key. LangGraph replays the last uncompleted node after a
+        # crash-resume; without this the model call and every tool run happen
+        # twice.
+        turn_key = f"{meeting_id}:{turn_no}:{agent_id}"
 
-        if getattr(model_settings, "inference_ignore_tls", False):
-            from app.core.network import get_http_client, get_sync_http_client
-
-            llm_params["http_client"] = get_sync_http_client(ignore_tls=True)
-            llm_params["http_async_client"] = get_http_client(ignore_tls=True)
-
-        llm = ChatOpenAI(**llm_params)
-
-        retrieval_tool = create_retrieval_tool(
-            agent_id=str(my_role.id),
-            meeting_id=state.get("meeting_id"),
-            library_access=my_role.allowed_shared_library_access,
-        )
-        tools = [retrieval_tool]
-
-        raw_agent_prompt = getattr(model_settings, "agent_prompt", None) or DEFAULT_AGENT_PROMPT
-
-        # Create attendee list for the agent
-        other_attendees = [
-            f"- {a.display_name} ({a.title}, {a.department})"
-            for aid, a in attendees.items()
-            if aid != agent_id
-        ]
-        attendee_list_str = (
-            "\n".join(other_attendees) if other_attendees else "No other participants."
-        )
-
-        # Placeholders: DISPLAY_NAME, TITLE, DEPARTMENT, SUMMARY, TONE,
-        # COLLABORATION_STYLE, OBJECTIVE, AGENDA, ATTENDEE_LIST
-        sys_prompt = (
-            raw_agent_prompt.replace("{{DISPLAY_NAME}}", my_role.display_name)
-            .replace("{{TITLE}}", my_role.title)
-            .replace("{{DEPARTMENT}}", my_role.department)
-            .replace("{{SUMMARY}}", my_role.summary)
-            .replace(
-                "{{TONE}}",
-                ", ".join(my_role.tone) if isinstance(my_role.tone, list) else (my_role.tone or ""),
+        try:
+            handle = await manager.acquire(
+                meeting_id=meeting_id,
+                agent_id=agent_id,
+                profile=configurable.get("profile", "baseline"),
+                warm_pool=configurable.get("warm_pool", "persona-baseline"),
             )
-            .replace("{{COLLABORATION_STYLE}}", my_role.collaboration_style)
-            .replace("{{OBJECTIVE}}", state.get("objective", ""))
-            .replace("{{AGENDA}}", state.get("agenda", ""))
-            .replace("{{ATTENDEE_LIST}}", attendee_list_str)
+        except SandboxUnavailableError as exc:
+            return _failure_state(agent_id, role, f"No sandbox available: {exc}")
+
+        persona = _persona_from_role(role)
+        bind = PersonaBindRequest(
+            agent_id=agent_id,
+            meeting_id=meeting_id,
+            persona=persona,
+            system_prompt_template=(
+                getattr(settings_obj, "agent_prompt", None)
+                or role.system_prompt
+                or DEFAULT_AGENT_PROMPT
+            ),
+            granted_tools=list(role.default_tools or ["retrieve_documents"]),
+            model=ModelConfig(
+                endpoint=settings_obj.inference_endpoint or "",
+                model_name=settings_obj.inference_model_name or "",
+                temperature=settings_obj.inference_temperature,
+                ignore_tls=bool(settings_obj.inference_ignore_tls),
+            ),
+            limits=TurnLimits(
+                retrieval_limit=settings_obj.retrieval_limits_per_agent,
+                max_evidence_per_message=settings_obj.max_evidence_per_message,
+            ),
         )
-        historical_messages = [
-            msg
-            for msg in state.get("messages", [])
-            if isinstance(msg, AIMessage) and as_text(msg.content).startswith("[")
-        ]
 
-        agent = create_react_agent(llm, tools, prompt=sys_prompt)
-        response = await agent.ainvoke({"messages": historical_messages})
-
-        # Filter new messages appended by this agent's ReAct execution
-        new_msgs = response["messages"][len(historical_messages) :]
-
-        # Find the last AIMessage that has non-empty content
-        ai_messages_with_content = [
-            msg for msg in new_msgs if isinstance(msg, AIMessage) and as_text(msg.content).strip()
-        ]
-
-        if ai_messages_with_content:
-            final_message = ai_messages_with_content[-1]
-        else:
-            # Fallback if the agent only did tool calls or returned empty content
-            # We look for ANY AIMessage first, then fall back to a generic string
-            all_ai_messages = [msg for msg in new_msgs if isinstance(msg, AIMessage)]
-            if all_ai_messages:
-                final_message = all_ai_messages[-1]
-            else:
-                final_message = AIMessage(
-                    content="[No speech recorded. Performing background analysis.]"
+        turn = TurnRequest(
+            turn_key=turn_key,
+            objective=state.get("objective", ""),
+            agenda=state.get("agenda", ""),
+            brief=state.get("brief", ""),
+            expectations=state.get("expectations", ""),
+            attendees=[
+                Attendee(
+                    id=aid,
+                    display_name=a.display_name,
+                    title=a.title,
+                    department=a.department,
                 )
-
-        # Collect internal reasoning for trust debug mode
-        internal_events = []
-        parsed_thought = ""
-
-        # Separate private reasoning from what is said out loud, so internal
-        # monologue never reaches the meeting transcript.
-        public_text, parsed_thought = split_thought(as_text(final_message.content))
-        final_message.content = public_text
-
-        for msg in new_msgs:
-            if isinstance(msg, AIMessage) and msg.tool_calls:
-                internal_events.append({"type": "tool_call", "tool_calls": msg.tool_calls})
-            elif isinstance(msg, ToolMessage):
-                internal_events.append(
-                    {
-                        "type": "tool_result",
-                        "name": msg.name or "unknown",
-                        "content": as_text(msg.content),
-                    }
+                for aid, a in attendees.items()
+            ],
+            transcript=[
+                Utterance(
+                    speaker_id=str(m.additional_kwargs.get("agent_id", "")),
+                    display_name="",
+                    title="",
+                    content=str(m.content),
                 )
+                for m in public_transcript(state.get("messages", []))
+            ],
+        )
 
-        # Combined reasoning: parsed thought + tool logs
-        combined_reasoning = ""
-        if parsed_thought:
-            combined_reasoning += f"AGENT THOUGHT PROCESS:\n{parsed_thought}\n\n"
+        try:
+            async with PersonaSandboxClient(handle.base_url) as client:
+                await client.bind(bind)
+                async for event in client.stream_turn(turn):
+                    if event.type == "turn.error" and event.error is not None:
+                        return _failure_state(agent_id, role, event.error.message)
+                    if event.type == "turn.result" and event.result is not None:
+                        return _success_state(agent_id, handle.sandbox_name, event.result)
+        except Exception as exc:
+            logger.error("sandbox_turn_failed", agent_id=agent_id, error=str(exc))
+            return _failure_state(agent_id, role, str(exc))
 
-        if internal_events:
-            combined_reasoning += "INTERNAL ACTIONS & TOOLS:\n" + json.dumps(
-                internal_events, indent=2
-            )
-
-        if not combined_reasoning:
-            combined_reasoning = "No internal tools used."
-
-        # Format the final output to inject the agent's name for transcript clarity
-        cleaned_content = final_message.content.strip() if final_message.content else ""
-
-        # Remove any hallucinated prefixes from the LLM to prevent double-prefixing
-        cleaned_content = strip_speaker_prefix(cleaned_content)
-
-        if not cleaned_content:
-            # If it was an AI message with tool calls but no text
-            cleaned_content = "(performing internal analysis...)"
-
-        public_content = f"[{my_role.display_name} - {my_role.title}] {cleaned_content}"
-
-        event = {
-            "type": "agent_spoke",
-            "agent_id": str(my_role.id),
-            "content": public_content,
-            "private_reasoning": combined_reasoning,
-            "raw_content": final_message.content,
-        }
-
-        return {
-            "messages": [AIMessage(content=public_content)],
-            "event_log": [event],
-            "active_agent_id": str(my_role.id),
-        }
+        return _failure_state(agent_id, role, "Sandbox closed the stream without a result")
 
     return agent_node
+
+
+def _success_state(agent_id: str, sandbox_name: str, result: Any) -> dict[str, Any]:
+    audit = [
+        {
+            "turn_key": result.turn_key,
+            "agent_id": agent_id,
+            "tool": tr.name,
+            "ok": tr.ok,
+            "denied_reason": tr.denied_reason,
+            "duration_ms": tr.duration_ms,
+        }
+        for tr in result.tool_results
+    ]
+    return {
+        "messages": [make_utterance(result.public_content, agent_id)],
+        "event_log": [
+            {
+                "type": "agent_spoke",
+                "agent_id": agent_id,
+                "content": result.public_content,
+                "private_reasoning": result.private_reasoning,
+                "sandbox": sandbox_name,
+                "tool_calls": [tc.model_dump() for tc in result.tool_calls],
+            }
+        ],
+        "tool_audit": audit,
+        "sandboxes": {agent_id: sandbox_name},
+        "active_agent_id": agent_id,
+    }
+
+
+def _failure_state(agent_id: str, role: Any, message: str) -> dict[str, Any]:
+    """A failed turn is recorded, not swallowed.
+
+    The meeting continues -- one attendee failing to speak should not end it --
+    but the failure is visible in the transcript and the event log rather than
+    appearing as silence.
+    """
+    content = f"[{role.display_name} - {role.title}] (unable to contribute this turn)"
+    logger.error("agent_turn_failed", agent_id=agent_id, reason=message)
+    return {
+        "messages": [make_utterance(content, agent_id)],
+        "event_log": [
+            {
+                "type": "agent_failed",
+                "agent_id": agent_id,
+                "content": content,
+                "private_reasoning": message,
+            }
+        ],
+        "tool_audit": [{"agent_id": agent_id, "tool": None, "ok": False, "error": message}],
+        "active_agent_id": agent_id,
+    }

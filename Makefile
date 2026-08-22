@@ -100,12 +100,16 @@ lint: ## ruff + format + mypy + eslint + tsc + helm/kubeconform
 	cd backend && uv run ruff check app scripts tests
 	cd backend && uv run ruff format --check app scripts tests alembic
 	cd backend && uv run mypy app scripts
+	cd sandbox/runtime && uv run ruff check runtime tests
+	cd sandbox/runtime && uv run mypy runtime
 	cd frontend && npm run lint
 	cd frontend && npx tsc --noEmit
+	bash sandbox/runtime/sync-shared.sh && git diff --exit-code sandbox/runtime/runtime/protocol.py sandbox/runtime/runtime/recovery.py
 	$(MAKE) chart-validate
 
-test: ## Backend unit tests with coverage
+test: ## Backend + sandbox runtime tests with coverage
 	cd backend && uv run pytest tests/unit -v --cov=app --cov-report=term-missing
+	cd sandbox/runtime && uv run pytest tests -v
 
 chart-validate: ## Render every values profile and validate against API schemas
 	@for f in values.yaml values-local.yaml values-ollama.yaml; do \
