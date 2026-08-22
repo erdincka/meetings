@@ -1,0 +1,5 @@
+Keeps this directory in git.
+
+Next.js serves static assets from here and the runtime image COPYs it. When the
+five unused create-next-app SVGs were removed the directory became empty, git
+stopped tracking it, and the Docker build failed on a missing /app/public.

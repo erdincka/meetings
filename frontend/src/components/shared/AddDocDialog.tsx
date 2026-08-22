@@ -3,6 +3,7 @@
 import { useState, useRef } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiClient } from "@/lib/api-client"
+import type { Role } from "@/lib/types"
 import { toast } from "sonner"
 import { Loader2, Search, Upload, FileText, Info } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -17,7 +18,7 @@ interface DocRegistryItem {
   id: string;
   document_name: string;
   file_type: string;
-  metadata_json?: any;
+  metadata_json?: { size?: number } | null;
 }
 
 interface AddDocDialogProps {
@@ -27,7 +28,7 @@ interface AddDocDialogProps {
   onDocRemoved?: (docId: string) => void;
   attachedDocIds: string[];
   meetingId?: string;
-  roles: any[];
+  roles: Role[];
 }
 
 export default function AddDocDialog({ 
@@ -53,9 +54,9 @@ export default function AddDocDialog({
 
   const linkMutation = useMutation({
     mutationFn: ({ docId, scope, ownerId }: { docId: string, scope: string, ownerId?: string }) => 
-        apiClient.post(`/meetings/${meetingId}/documents/${docId}`, { library_scope: scope, owner_agent_id: ownerId }),
-    onSuccess: (data: any) => {
-        onDocAdded(data.id || data.data?.id)
+        apiClient.post<{ id: string }>(`/meetings/${meetingId}/documents/${docId}`, { library_scope: scope, owner_agent_id: ownerId }),
+    onSuccess: (data: { id: string }) => {
+        onDocAdded(data.id)
         onOpenChange(false)
         toast.success("Document linked to session successfully.")
     }
@@ -87,7 +88,7 @@ export default function AddDocDialog({
         } else {
             toast.error(data.message || "Upload failed")
         }
-    } catch (e) {
+    } catch {
         toast.error("Network error during ingest")
     }
   }
@@ -121,7 +122,7 @@ export default function AddDocDialog({
             } else {
                 toast.error(data.message || "Cloning failed")
             }
-        } catch (e) {
+        } catch {
             toast.error("Bridge fault during cloning.")
         } finally {
             setCloningDocId(null)
@@ -231,7 +232,7 @@ export default function AddDocDialog({
                                         <div key={doc.id} className="flex items-center justify-between p-3 rounded-lg border border-border/10 bg-muted/5 group hover:bg-muted/10 transition-colors">
                                             <div className="min-w-0">
                                                 <p className="text-xs font-bold truncate group-hover:text-primary transition-colors">{doc.document_name}</p>
-                                                <p className="text-[9px] uppercase text-muted-foreground mt-0.5">{doc.file_type} • {(doc.metadata_json?.size / 1024).toFixed(1)} KB</p>
+                                                <p className="text-[9px] uppercase text-muted-foreground mt-0.5">{doc.file_type} • {((doc.metadata_json?.size ?? 0) / 1024).toFixed(1)} KB</p>
                                             </div>
                                             <Button 
                                                 size="sm" 
@@ -255,7 +256,7 @@ export default function AddDocDialog({
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-2">
                                 <Label className="text-[10px] uppercase font-bold tracking-widest opacity-60">Persistence Layer</Label>
-                                <Select value={uploadScope} onValueChange={(v: any) => setUploadScope(v)}>
+                                <Select value={uploadScope} onValueChange={(v) => setUploadScope(v ?? 'company')}>
                                     <SelectTrigger className="h-9">
                                         <SelectValue placeholder="Persistence..." />
                                     </SelectTrigger>

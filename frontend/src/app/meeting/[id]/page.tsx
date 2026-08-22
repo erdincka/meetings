@@ -1,40 +1,23 @@
 "use client"
 import { useEffect, useState, useRef, use, useMemo } from 'react'
-import { useMeetingStore } from '@/store'
+import { useMeetingStore, type EventLogItem, type MeetingStatus } from '@/store'
+import type { Role } from '@/lib/types'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
-import axios from 'axios'
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
 import ReactMarkdown from 'react-markdown'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { 
   FileText, 
-  MessageSquare, 
-  Settings, 
   Info, 
-  Clock, 
-  CheckCircle, 
-  XCircle, 
   Loader2, 
-  Send, 
-  Mic, 
-  BarChart, 
-  Shield, 
-  ChevronRight, 
-  Paperclip, 
-  MoreVertical, 
-  Search, 
-  FilePlus, 
-  ArrowLeft, 
-  CheckSquare, 
-  RefreshCcw, 
-  Terminal
+  FilePlus
 } from "lucide-react"
 import AddDocDialog from "@/components/shared/AddDocDialog"
 import { toast } from 'sonner'
@@ -50,6 +33,32 @@ const CHAT_COLORS = [
   "bg-pink-500/10 border-pink-500/30 text-pink-400",
 ]
 
+interface MeetingDetail {
+  id: string
+  status: string
+  objective?: string | null
+  brief?: string | null
+  agenda?: string | null
+  expectations?: string | null
+  selected_attendee_ids: string[]
+  current_turn: number
+  turn_limit: number
+  meeting_log: EventLogItem[]
+  final_summary?: string | null
+  stop_requested: boolean
+  terminated: boolean
+}
+
+interface MeetingDocument {
+  id: string
+  document_name: string
+  library_scope?: string
+  file_type?: string | null
+  owner_agent_id?: string | null
+  meeting_id?: string | null
+  metadata_json?: { size?: number } | null
+}
+
 export default function LiveMeetingPage({ params }: { params: Promise<{ id: string }> }) {
   const unwrappedParams = use(params)
   const meetingId = unwrappedParams.id
@@ -59,20 +68,20 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
 
   const { data: meeting, isLoading } = useQuery({
     queryKey: ['meeting', meetingId],
-    queryFn: () => apiClient.get<any>(`/meetings/${meetingId}`),
+    queryFn: () => apiClient.get<MeetingDetail>(`/meetings/${meetingId}`),
     enabled: !!meetingId
   })
 
   // Fetch all roles to map IDs to Names
-  const { data: roles = [] } = useQuery<any[]>({
+  const { data: roles = [] } = useQuery<Role[]>({
     queryKey: ['roles'],
-    queryFn: () => apiClient.get<any[]>('/roles'),
+    queryFn: () => apiClient.get<Role[]>('/roles'),
   })
 
   const roleMap = useMemo(() => roles.reduce((acc, r) => {
     acc[r.id] = r
     return acc
-  }, {} as Record<string, any>), [roles])
+  }, {} as Record<string, Role>), [roles])
 
   const getAgentLabel = (id: string | undefined) => {
     if (!id) return "System"
@@ -98,7 +107,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
     // Only do initial sync once to avoid loops
     if (!initialSyncDone.current) {
       store.setMeetingData({
-        status: meeting.status as any,
+        status: meeting.status as MeetingStatus,
         eventLog: meeting.meeting_log || [],
         objective: meeting.objective || "",
         typingAgentId: null,
@@ -111,7 +120,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
     // If meeting is already finished, do NOT open WebSocket
     // Safety check: also consider it finished if the log contains a completion event
     const isFinished = ['completed', 'terminated', 'failed'].includes(meeting.status) || 
-                       (meeting.meeting_log || []).some((e: any) => e.type === 'meeting_completed' || e.is_conclusion);
+                       (meeting.meeting_log || []).some((e: EventLogItem) => e.type === 'meeting_completed' || e.is_conclusion);
     if (isFinished) return;
     
     setSocket(null); // Clear previous socket if any before reconnecting
@@ -140,8 +149,8 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
           console.error("Backend Error:", data.content)
           store.setStatus('failed')
         }
-      } catch (e) {
-        console.error("WS Parsing Error", e)
+      } catch (err) {
+        console.error("Failed to parse WebSocket message", err)
       }
     }
     
@@ -152,23 +161,23 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
   const queryClient = useQueryClient()
 
   // Documents Logic
-  const { data: meetingDocs = [], isLoading: isLoadingDocs } = useQuery<any[]>({
+  const { data: meetingDocs = [], isLoading: isLoadingDocs } = useQuery<MeetingDocument[]>({
     queryKey: ['meeting-docs', meetingId],
-    queryFn: () => apiClient.get<any[]>(`/documents?meeting_id=${meetingId}`),
+    queryFn: () => apiClient.get<MeetingDocument[]>(`/documents?meeting_id=${meetingId}`),
     enabled: !!meetingId
   })
 
   const [isAddDocOpen, setIsAddDocOpen] = useState(false)
-  const [viewingDoc, setViewingDoc] = useState<any | null>(null)
+  const [viewingDoc, setViewingDoc] = useState<MeetingDocument | null>(null)
   const [docContent, setDocContent] = useState<string | null>(null)
   const [isLoadingContent, setIsLoadingContent] = useState(false)
 
   const fetchDocContent = async (docId: string) => {
     setIsLoadingContent(true)
     try {
-      const res = await apiClient.get<any>(`/documents/${docId}/content`)
-      setDocContent((res as any).content)
-    } catch (e) {
+      const res = await apiClient.get<{ content: string }>(`/documents/${docId}/content`)
+      setDocContent(res.content)
+    } catch {
       toast.error("Failed to load document content")
     } finally {
       setIsLoadingContent(false)
@@ -207,10 +216,10 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
 
   // Filter for chat bubbles - keep only agent speech (supervisor goes to event log reasoning)
   const chatEvents = store.eventLog.filter((e) => 
-    e.type === "agent_spoke" && !(e as any).is_conclusion
+    e.type === "agent_spoke" && !e.is_conclusion
   )
   
-  const conclusionEvent = store.eventLog.find((e: any) => e.is_conclusion)
+  const conclusionEvent = store.eventLog.find((e) => e.is_conclusion)
 
   return (
     <div className="flex h-full p-4 gap-4 overflow-hidden">
@@ -279,7 +288,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                       <div>
                         <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Participants</h4>
                         <div className="flex flex-wrap gap-1.5 mt-1.5">
-                          {Object.values(roleMap).map((role: any) => (
+                          {Object.values(roleMap).map((role) => (
                             <Badge key={role.id} variant="secondary" className="text-[9px] bg-primary/5 border-primary/20 text-primary/90 h-5 px-1.5 font-medium">
                               {role.display_name} ({role.title})
                             </Badge>
@@ -422,7 +431,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                       </div>
                     </div>
                     <div className="prose prose-invert prose-sm max-w-none text-foreground/90">
-                      <ReactMarkdown>{conclusionEvent.content?.replace(/^\[Supervisor\]\sConcluded the meeting\.\s*/, "") || (conclusionEvent as any).reasoning}</ReactMarkdown>
+                      <ReactMarkdown>{conclusionEvent.content?.replace(/^\[Supervisor\]\sConcluded the meeting\.\s*/, "") || typeof conclusionEvent.reasoning === "string" ? conclusionEvent.reasoning : ""}</ReactMarkdown>
                     </div>
                   </div>
                 </div>
@@ -473,7 +482,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                         {store.eventLog.slice(-50).map((evt, i) => {
                         const label = getAgentLabel(evt.agent_id)
                         let msg = evt.type.replace(/_/g, ' ')
-                        const reasoning = (evt as any).reasoning
+                        const reasoning = typeof evt.reasoning === "string" ? evt.reasoning : undefined
                         
                         if (evt.type === 'meeting_started') msg = `simulation started with ID: ${evt.meeting_id || meetingId}`
                         if (evt.type === 'supervisor_selected_next_agent') msg = `Next speaker chosen: ${label}`
@@ -542,7 +551,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                                     <div className="flex items-center gap-2 mt-1 text-[9px] text-muted-foreground">
                                         <span className="uppercase">{doc.file_type?.split('/')?.[1] || 'DOC'}</span>
                                         <span>•</span>
-                                        <span>{(doc.metadata_json?.size / 1024).toFixed(1)} KB</span>
+                                        <span>{((doc.metadata_json?.size ?? 0) / 1024).toFixed(1)} KB</span>
                                         {doc.owner_agent_id && (
                                             <>
                                                 <span>•</span>

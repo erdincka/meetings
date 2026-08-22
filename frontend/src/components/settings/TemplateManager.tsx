@@ -2,6 +2,7 @@
 import { useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiClient } from "@/lib/api-client"
+import { errorMessage } from "@/lib/errors"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -12,7 +13,6 @@ import {
     Plus, 
     Edit2, 
     Trash2, 
-    Layout, 
     Check, 
     X, 
     Lock,
@@ -85,8 +85,8 @@ export default function TemplateManager() {
             setIsDialogOpen(false)
             setEditingTemplate(null)
         },
-        onError: (err: any) => {
-            toast.error("Save Failed", { description: err.message })
+        onError: (err: unknown) => {
+            toast.error("Save failed", { description: errorMessage(err) })
         }
     })
 
@@ -97,8 +97,8 @@ export default function TemplateManager() {
             toast.success("Template Deleted", { description: "The scenario template has been removed." })
             setIsDeleting(null)
         },
-        onError: (err: any) => {
-            toast.error("Delete Failed", { description: err.message })
+        onError: (err: unknown) => {
+            toast.error("Delete failed", { description: errorMessage(err) })
             setIsDeleting(null)
         }
     })
