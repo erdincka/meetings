@@ -50,3 +50,25 @@ check.**
 `sandbox.runtimeClassName` is a Helm value and `gvisor` is never hardcoded in
 a template, so dropping to tier 2 or 3 on a host that cannot run runsc is a
 one-line values change. Nightly CI runs the same gate on amd64 runners.
+
+### Durability across host restarts
+
+Planning flagged a concern that a runsc setup might not survive a Rancher
+Desktop restart. It does. After `rdctl set --kubernetes.enabled=false`
+reconfigured and restarted the VM backend, both kind nodes came back, the
+CNPG cluster and its pgvector ImageVolume were intact, and both gates passed
+again unchanged. The runsc binary and containerd handler live in the kind
+*node image*, so they are rebuilt only by `make node-image`, not by anything
+the host does.
+
+### Reaching a sandbox from the backend
+
+`Sandbox.spec.service: true` makes the controller publish a per-sandbox
+Service, and `Sandbox.status.serviceFQDN` carries its DNS name. Verified: a
+pod in the `meetings` namespace reaches a sandbox in `meetings-sandboxes` at
+`<name>.<ns>.svc.cluster.local:8080` and gets HTTP 200.
+
+This simplifies the design as planned. The backend runs in-cluster, so
+backend → persona-runtime calls use `serviceFQDN` directly. The **Sandbox
+Router is only needed for access from outside the cluster**, where
+`kubectl port-forward` is unusable because it is incompatible with gVisor.
