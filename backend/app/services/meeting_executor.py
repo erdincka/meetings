@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.models.meetings import Meeting
 from app.models.roles import RoleAgent
 from app.orchestration.graph import build_meeting_graph
+from app.sandbox.reaper import release_meeting_sandboxes
 from app.services.settings_service import get_runtime_settings
 
 logger = structlog.get_logger(__name__)
@@ -101,6 +102,17 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
                 event_log=accumulated_events,
                 final_summary=final_summary,
             )
+
+            # Hand the sandboxes back. The startup sweep covers the case where
+            # the backend dies before reaching this point.
+            sandbox_names = sorted(
+                {
+                    event["sandbox"]
+                    for event in accumulated_events
+                    if isinstance(event.get("sandbox"), str)
+                }
+            )
+            await release_meeting_sandboxes(sandbox_names)
 
             if not has_error:
                 yield {

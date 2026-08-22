@@ -1,0 +1,26 @@
+{{/*
+Sandbox namespaces.
+
+Owned by the chart rather than created out of band, so `helm install` is
+self-contained and the RBAC below never races a namespace that does not exist
+yet. Both are labelled for restricted Pod Security admission: sandboxes run
+untrusted model output and must not be able to opt out of that.
+
+The release namespace itself is not created here -- Helm requires it to exist
+before it can store the release.
+*/}}
+{{- range $ns := list .Values.sandbox.namespace .Values.sandbox.execNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "meetings.labels" $ | nindent 4 }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+  annotations:
+    # Kept on uninstall: deleting a namespace would take any running sandboxes
+    # with it, and namespaces are cheap to leave behind.
+    helm.sh/resource-policy: keep
+---
+{{- end }}

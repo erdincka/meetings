@@ -60,6 +60,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db_configured=bool(settings.DATABASE_URL),
         inference_configured=settings.inference_configured,
     )
+    # A backend killed mid-meeting never releases its sandboxes. Sweep any that
+    # belong to meetings which are no longer running.
+    try:
+        from app.core.database import async_session_maker
+        from app.sandbox.reaper import sweep_orphaned_sandboxes
+
+        if async_session_maker is not None:
+            async with async_session_maker() as session:
+                reaped = await sweep_orphaned_sandboxes(session)
+            if reaped:
+                logger.info("startup_sandbox_sweep", reaped=reaped)
+    except Exception as exc:  # never block startup on cleanup
+        logger.warning("startup_sandbox_sweep_failed", error=str(exc))
+
     yield
     from app.core.database import engine
 

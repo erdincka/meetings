@@ -42,6 +42,91 @@ spec:
   # cluster DNS; the Sandbox Router is only needed from outside the cluster,
   # where port-forward is unusable because it is incompatible with gVisor.
   service: true
+
+  # Declared explicitly rather than left to the controller.
+  #
+  # With networkPolicyManagement defaulting to Managed and no policy given, the
+  # controller synthesises a sensible default: ingress only from the Sandbox
+  # Router, egress to the public internet with every RFC1918 range excluded.
+  # That assumes all traffic goes through the Router. This design calls persona
+  # runtimes directly over cluster DNS, so the two paths it actually needs are
+  # opened here and nothing else is.
+  #
+  # This field is the fourth of the five enforcement layers, and the one Phase 3
+  # uses to give each capability profile a different reachable surface -- an
+  # analyst may reach Postgres, a baseline persona may not, so a stolen DSN is
+  # useless to the wrong profile.
+  networkPolicy:
+    ingress:
+      # Only the backend may drive a turn.
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ .Release.Namespace }}
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: {{ include "meetings.name" . }}
+                app.kubernetes.io/component: backend
+        ports:
+          - protocol: TCP
+            port: 8080
+      # The controller's own reconciliation and the Router, if deployed.
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: agent-sandbox-system
+    egress:
+      # Cluster DNS.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: kube-system
+        ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      # The backend's internal API: retrieval, artifacts, action items. This is
+      # the only in-cluster destination a baseline persona may reach -- notably
+      # NOT Postgres, which it has no credential for either.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ .Release.Namespace }}
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: {{ include "meetings.name" . }}
+                app.kubernetes.io/component: backend
+        ports:
+          - protocol: TCP
+            port: 8000
+      {{- if eq .Values.inference.mode "ollama" }}
+      # In-cluster inference.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ .Release.Namespace }}
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: {{ include "meetings.name" . }}
+                app.kubernetes.io/component: ollama
+        ports:
+          - protocol: TCP
+            port: 11434
+      {{- else }}
+      # External inference endpoint. NetworkPolicy cannot match DNS names, so
+      # this is expressed as "the public internet, minus every private range" --
+      # the sandbox can reach the model provider but cannot pivot to anything
+      # inside the cluster or the surrounding network.
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+                - 169.254.0.0/16
+      {{- end }}
   podTemplate:
     metadata:
       labels:

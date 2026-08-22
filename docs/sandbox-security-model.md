@@ -68,7 +68,33 @@ Service, and `Sandbox.status.serviceFQDN` carries its DNS name. Verified: a
 pod in the `meetings` namespace reaches a sandbox in `meetings-sandboxes` at
 `<name>.<ns>.svc.cluster.local:8080` and gets HTTP 200.
 
-This simplifies the design as planned. The backend runs in-cluster, so
-backend → persona-runtime calls use `serviceFQDN` directly. The **Sandbox
-Router is only needed for access from outside the cluster**, where
-`kubectl port-forward` is unusable because it is incompatible with gVisor.
+The backend runs in-cluster, so backend → persona-runtime calls use
+`serviceFQDN` directly, and the Sandbox Router is not on the hot path.
+
+**Correction to the original Phase 0 note.** That conclusion was drawn from a
+Sandbox created directly, with no SandboxTemplate. Sandboxes created *from a
+template* behave differently: `networkPolicyManagement` defaults to `Managed`,
+so when a template declares no `networkPolicy` the controller synthesises one
+that allows ingress **only from the Sandbox Router** and egress to the public
+internet with every RFC1918 range excluded. Direct calls are denied under that
+default.
+
+The default is a good one — it assumes traffic goes through the Router. This
+project takes the other path and declares its policy explicitly (see
+`deploy/charts/meetings/templates/sandbox-templates.yaml`), opening exactly two
+routes: ingress from the backend on 8080, and egress to the backend's internal
+API on 8000 plus DNS and the inference endpoint.
+
+## Enforcement layer 4: NetworkPolicy
+
+Verified on the running cluster:
+
+| Caller | Target | Result |
+|---|---|---|
+| Arbitrary pod in `meetings` | persona sandbox :8080 | **denied** (timeout) |
+| Backend pod | persona sandbox :8080 | allowed — `{"status":"ok"}` |
+
+This is the layer that makes a stolen credential useless to the wrong profile.
+From Phase 3, an `analyst` sandbox may reach Postgres and a `baseline` sandbox
+may not, so even if a baseline persona somehow obtained the metrics DSN its
+packets to 5432 are dropped before they leave the pod.
