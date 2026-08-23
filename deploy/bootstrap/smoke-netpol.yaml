@@ -21,11 +21,24 @@ metadata:
   labels: {role: target}
 spec:
   restartPolicy: Never
+  # Hardened like everything else this project deploys. A gate that models bad
+  # practice teaches bad practice, and the security scan rightly failed on it.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: server
       image: python:3.13-slim
       command: ["python3", "-m", "http.server", "8080"]
       ports: [{containerPort: 8080}]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
       resources:
         requests: {cpu: 20m, memory: 48Mi}
         limits:   {cpu: 300m, memory: 192Mi}
