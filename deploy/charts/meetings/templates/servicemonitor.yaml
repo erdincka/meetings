@@ -1,0 +1,25 @@
+{{- if .Values.observability.serviceMonitor }}
+{{/*
+Scrape config for kube-prometheus-stack.
+
+Gated off by default: the observability stack is optional here, and a
+ServiceMonitor referencing a CRD the cluster does not have makes `helm install`
+fail for someone who only wanted to run the app.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "meetings.name" . }}-backend
+  labels:
+    {{- include "meetings.labels" . | nindent 4 }}
+    release: {{ .Values.observability.prometheusRelease }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "meetings.name" . }}
+      app.kubernetes.io/component: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+{{- end }}

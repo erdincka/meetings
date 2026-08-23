@@ -201,6 +201,12 @@ spec:
               value: /etc/sandbox/secrets/inference-api-key
             - name: METRICS_DSN_FILE
               value: /etc/sandbox/secrets/metrics-dsn
+            # Without this the trace stops at the backend, which is the least
+            # interesting third of the work.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $root.Values.observability.otlpEndpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "meetings-persona-{{ $profile.name }}"
             - name: CORPUS_URL
               value: "http://{{ include "meetings.name" $root }}-corpus.{{ $root.Release.Namespace }}.svc:8080"
             - name: SANDBOX_EXEC_NAMESPACE

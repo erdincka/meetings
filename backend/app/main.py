@@ -9,12 +9,14 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.api.routes import api_router
 from app.core.config import settings
 from app.core.database import check_db_ready
 from app.core.exceptions import NexusBaseException
+from app.core.telemetry import setup_telemetry
 from app.domain.response import APIResponse
 
 structlog.configure(
@@ -42,7 +44,9 @@ class HealthCheckFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
-        return not any(p in msg for p in ("/api/v1/system/status", "/health", "/readyz"))
+        return not any(
+            p in msg for p in ("/api/v1/system/status", "/health", "/readyz", "/metrics")
+        )
 
 
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
@@ -95,13 +99,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # belong to meetings which are no longer running.
     try:
         from app.core.database import async_session_maker
-        from app.sandbox.reaper import sweep_orphaned_sandboxes
+        from app.sandbox.reaper import reap_abandoned_meetings, sweep_orphaned_sandboxes
 
         if async_session_maker is not None:
             async with async_session_maker() as session:
-                reaped = await sweep_orphaned_sandboxes(session)
-            if reaped:
-                logger.info("startup_sandbox_sweep", reaped=reaped)
+                # Meetings first: a single abandoned row blocks every future
+                # meeting, since only one may be active at a time.
+                meetings_reaped = await reap_abandoned_meetings(session)
+                sandboxes_reaped = await sweep_orphaned_sandboxes(session)
+            if meetings_reaped or sandboxes_reaped:
+                logger.info(
+                    "startup_sweep",
+                    meetings=meetings_reaped,
+                    sandboxes=sandboxes_reaped,
+                )
     except Exception as exc:  # never block startup on cleanup
         logger.warning("startup_sandbox_sweep_failed", error=str(exc))
 
@@ -118,6 +129,9 @@ app = FastAPI(
     version=settings.VERSION,
     lifespan=lifespan,
 )
+
+# Tracing is wired before the routes so FastAPI instrumentation sees them.
+setup_telemetry(app)
 
 # Explicit origins. allow_origins=["*"] with allow_credentials=True is
 # rejected by the CORS spec, so the previous configuration was both a hole and
@@ -140,6 +154,16 @@ async def nexus_exception_handler(request: Request, exc: NexusBaseException) -> 
             status="error", message=exc.message, meta={"code": exc.code}
         ).model_dump(),
     )
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus scrape endpoint.
+
+    Plain text rather than JSON, and deliberately unauthenticated: it is scraped
+    in-cluster and exposes counters, not data.
+    """
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/health")

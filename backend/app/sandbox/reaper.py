@@ -29,6 +29,38 @@ logger = structlog.get_logger(__name__)
 LIVE_STATUSES = frozenset({"queued", "running", "stopping"})
 
 
+async def reap_abandoned_meetings(session: AsyncSession) -> int:
+    """Terminate meetings left running by a backend that is no longer here.
+
+    A meeting is owned by the process executing it. If that process dies -- a
+    restart, a crash, a cancelled WebSocket -- the meeting stays `queued` or
+    `running` with nothing driving it. Because only one meeting may be active at
+    a time, a single abandoned row then blocks *every* future meeting, and the
+    only symptom is a 400 on create.
+
+    Anything still marked live at startup is by definition abandoned: this
+    process has just started and owns nothing yet.
+    """
+    from sqlalchemy import update
+
+    result = await session.execute(
+        update(Meeting)
+        .where(Meeting.status.in_(sorted(LIVE_STATUSES)))
+        .values(status="terminated", terminated=True)
+        .returning(Meeting.id)
+    )
+    reaped = list(result.scalars().all())
+    await session.commit()
+
+    if reaped:
+        logger.info(
+            "abandoned_meetings_reaped",
+            count=len(reaped),
+            meeting_ids=[str(m) for m in reaped],
+        )
+    return len(reaped)
+
+
 async def sweep_orphaned_sandboxes(session: AsyncSession) -> int:
     """Delete sandboxes belonging to meetings that are no longer running.
 

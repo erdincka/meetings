@@ -26,6 +26,7 @@ from .protocol import (
     TurnEvent,
     TurnRequest,
 )
+from .telemetry import setup_telemetry
 
 structlog.configure(
     processors=[
@@ -81,6 +82,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Persona Sandbox Runtime", lifespan=lifespan)
+
+# Attaches this sandbox's spans to the backend's trace via the incoming
+# traceparent header, so one turn is one trace across all three tiers.
+setup_telemetry(app)
 
 
 @app.get("/healthz")

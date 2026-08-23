@@ -16,7 +16,8 @@ CALICO_VER     ?= v3.31.1
 
 .DEFAULT_GOAL := help
 .PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox \
-        smoke-pgvector smoke-netpol deploy images lint test check security migrate seed demo status
+        smoke-pgvector smoke-netpol deploy deploy-observed images lint test check \
+        security migrate seed demo observability observability-down status
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -132,6 +133,25 @@ demo: ## Run the least-privilege demo meeting to completion (in-cluster)
 	$(KUBECTL) apply -f deploy/demo/demo-job.rendered.yaml
 	$(KUBECTL) -n meetings wait --for=condition=Ready pod -l job-name=meetings-demo --timeout=120s
 	$(KUBECTL) -n meetings logs -f job/meetings-demo
+
+observability: ## Install Prometheus, Grafana and Tempo (optional, ~1.5GB)
+	@bash deploy/bootstrap/40-observability.sh install
+
+observability-down: ## Remove the observability stack
+	@bash deploy/bootstrap/40-observability.sh remove
+
+deploy-observed: ## Deploy with tracing and scraping enabled
+	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
+	  $(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
+	    -f deploy/charts/meetings/values-local.yaml \
+	    --set backend.image=$$BACKEND_TAG \
+	    --set frontend.image=$$FRONTEND_TAG \
+	    --set sandbox.runtimeImage=$$RUNTIME_TAG \
+	    --set sandbox.execImage=$$EXEC_TAG \
+	    --set corpus.image=$$CORPUS_TAG \
+	    --set observability.serviceMonitor=true \
+	    --set observability.otlpEndpoint=http://tempo.observability.svc:4317 \
+	    --wait --timeout 8m
 
 seed: ## Load reference personas, documents and templates
 	$(KUBECTL) -n meetings exec deploy/meetings-backend -- \
