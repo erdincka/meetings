@@ -20,6 +20,23 @@ stringData:
   # manager; it is committed here so `make kind-up` is reproducible.
   password: metrics-ro-local-dev
 ---
+# The same credential as a connection string, in the namespace that actually
+# consumes it.
+#
+# Secrets are namespace-scoped: the persona sandboxes run in
+# meetings-sandboxes and cannot project a Secret from meetings, so the
+# projection above resolved to nothing and query_business_metrics reported
+# "no metrics credential is mounted" for every persona that had the tool.
+# Only the profiles whose SandboxTemplate declares needsMetricsDsn mount this.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: meetings-metrics-ro
+  namespace: meetings-sandboxes
+type: Opaque
+stringData:
+  dsn: postgresql://metrics_ro:metrics-ro-local-dev@meetings-postgres-rw.meetings.svc:5432/meetings
+---
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:

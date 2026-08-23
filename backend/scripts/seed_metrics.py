@@ -76,8 +76,11 @@ PRODUCTS = [
 REGIONS = [("EMEA", "Europe, Middle East & Africa"), ("AMER", "Americas"), ("APAC", "Asia Pacific")]
 QUARTERS = [(f"FY25Q{q}", 2025, q) for q in range(1, 5)] + [("FY26Q1", 2026, 1)]
 
-# The product at the centre of the recall discussion.
-TROUBLED_PRODUCT = "P-200"
+# The product at the centre of the recall discussion. The Crisis Incident
+# Response brief names this product, so the defect spike seeded below is
+# what a persona finds when it queries the warehouse -- the discussion and
+# the data have to be about the same thing for the demo to mean anything.
+TROUBLED_PRODUCT = "P-200"  # Aurora Regulator Pro
 
 
 async def seed_metrics() -> None:

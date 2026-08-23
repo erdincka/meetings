@@ -443,7 +443,7 @@ async def seed_data() -> None:
                 "description": "High-stakes executive alignment for urgent operational failures.",
                 "is_builtin": True,
                 "brief": (
-                    "A systemic manufacturing defect in the 'Nexus Widget' has been identified at Facility Alpha. "
+                    "A systemic manufacturing defect in the 'Aurora Regulator Pro' has been identified at Facility Alpha. "
                     "Initial field reports indicate a 4% failure rate, which poses significant brand and financial risk. "
                     "We need to decide on the scale of containment and how to manage stakeholder expectations."
                 ),

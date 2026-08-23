@@ -248,9 +248,12 @@ spec:
                     - key: {{ $root.Values.inference.apiKeyKey }}
                       path: inference-api-key
               {{- if $profile.needsMetricsDsn }}
+              # Not optional: this profile is defined by holding the metrics
+              # credential, so a missing Secret should stop the pod rather than
+              # mount nothing and let the tool report an outage it cannot
+              # distinguish from a real one.
               - secret:
                   name: {{ $root.Values.sandbox.metricsSecret }}
-                  optional: true
                   items:
                     - key: dsn
                       path: metrics-dsn
