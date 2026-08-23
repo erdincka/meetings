@@ -99,6 +99,7 @@ async def check_db_ready() -> str:
 
 def _ensure_models_registered():  # type: ignore[no-untyped-def]
     """Import every model so ``Base.metadata`` is complete for Alembic autogenerate."""
+    import app.models.artifacts  # noqa: F401
     import app.models.documents  # noqa: F401
     import app.models.meetings  # noqa: F401
     import app.models.roles  # noqa: F401

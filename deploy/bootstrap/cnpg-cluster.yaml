@@ -47,6 +47,10 @@ spec:
         # DSN handed to analyst sandboxes can read these tables and nothing
         # else, so a prompt-injected agent cannot reach application data.
         - CREATE SCHEMA IF NOT EXISTS metrics;
+        # postInitApplicationSQL runs as the superuser, so the schema is owned
+        # by postgres and the application role cannot populate it. The seeder
+        # runs as appuser.
+        - GRANT ALL ON SCHEMA metrics TO appuser;
         - CREATE ROLE metrics_ro LOGIN PASSWORD 'metrics-ro-local-dev';
         - ALTER ROLE metrics_ro SET default_transaction_read_only = on;
         - ALTER ROLE metrics_ro SET statement_timeout = '5s';
