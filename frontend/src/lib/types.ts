@@ -91,3 +91,30 @@ export interface Template {
   default_document_ids?: string[];
   is_builtin?: boolean;
 }
+
+/** What a persona was granted, and what the cluster will enforce. */
+export interface AttendeeCapabilities {
+  agent_id: string
+  display_name: string
+  title: string
+  profile: string
+  profile_description: string
+  granted_tools: string[]
+  can_execute_code: boolean
+  holds_metrics_credential: boolean
+}
+
+export interface MeetingCapabilities {
+  attendees: AttendeeCapabilities[]
+  all_tools: string[]
+}
+
+/** One tool call as recorded in the meeting's audit trail. */
+export interface ToolAuditEntry {
+  agent_id: string
+  tool: string | null
+  ok: boolean
+  denied_reason?: string | null
+  duration_ms?: number
+  error?: string
+}

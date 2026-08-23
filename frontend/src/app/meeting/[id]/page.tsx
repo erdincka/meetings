@@ -21,6 +21,7 @@ import {
 } from "lucide-react"
 import AddDocDialog from "@/components/shared/AddDocDialog"
 import SandboxStatus from "@/components/meeting/SandboxStatus"
+import ToolAuditMatrix from "@/components/meeting/ToolAuditMatrix"
 import { toast } from 'sonner'
 
 const CHAT_COLORS = [
@@ -290,6 +291,12 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                       )}
                     </div>
                     <div className="space-y-4">
+                      <div>
+                        <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Capability grants</h4>
+                        <div className="mt-1.5">
+                          <ToolAuditMatrix meetingId={meetingId} eventLog={store.eventLog} />
+                        </div>
+                      </div>
                       <div>
                         <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Isolated runtimes</h4>
                         <div className="mt-1.5">

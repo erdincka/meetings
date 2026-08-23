@@ -32,6 +32,7 @@ from .protocol import (
 )
 from .recovery import as_text, split_thought, strip_speaker_prefix
 from .tools import build_tools
+from .tools.code_exec import DENIED_PREFIX
 
 logger = structlog.get_logger(__name__)
 
@@ -142,11 +143,18 @@ class BoundPersona:
                     yield TurnEvent(type="tool.call", tool_call=tc)
             elif isinstance(message, ToolMessage):
                 body = as_text(message.content)
+                # A cluster denial is not a tool failure: it is a policy
+                # decision, and the audit matrix has to tell them apart. An
+                # outage shown as a denial would misrepresent the security
+                # model; a denial shown as an outage would hide it.
+                denied = body.startswith(DENIED_PREFIX)
                 tr = ToolResult(
                     id=str(message.tool_call_id or uuid.uuid4()),
                     name=message.name or "unknown",
-                    ok=not body.lower().startswith(("error", "retrieval is unavailable")),
+                    ok=not denied
+                    and not body.lower().startswith(("error", "retrieval is unavailable")),
                     summary=body[:500],
+                    denied_reason=body[len(DENIED_PREFIX) :].lstrip(": ") if denied else None,
                 )
                 tool_results.append(tr)
                 yield TurnEvent(type="tool.result", tool_result=tr)
