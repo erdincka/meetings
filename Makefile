@@ -101,13 +101,26 @@ images: ## Build app images and load them into the kind cluster
 	docker build --target runtime -t meetings-persona-runtime:latest sandbox/runtime
 	docker build -t meetings-exec-python:latest sandbox/exec-python
 	docker build -t meetings-corpus:latest sandbox/corpus
-	kind load docker-image meetings-backend:latest meetings-frontend:latest \
-	  meetings-persona-runtime:latest meetings-exec-python:latest \
-	  meetings-corpus:latest --name $(CLUSTER)
+	# Re-tag by content digest and load *those* tags. `:latest` alone leaves the
+	# Deployment spec unchanged, so helm upgrade has nothing to roll and the old
+	# pod keeps serving old code -- a deploy that looks successful and is not.
+	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
+	  for t in $$BACKEND_TAG $$FRONTEND_TAG $$RUNTIME_TAG $$EXEC_TAG $$CORPUS_TAG; do \
+	    docker tag "$${t%%:*}:latest" "$$t"; \
+	  done; \
+	  kind load docker-image $$BACKEND_TAG $$FRONTEND_TAG $$RUNTIME_TAG \
+	    $$EXEC_TAG $$CORPUS_TAG --name $(CLUSTER)
 
 deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
-	$(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
-	  -f deploy/charts/meetings/values-local.yaml --wait --timeout 6m
+	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
+	  $(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
+	    -f deploy/charts/meetings/values-local.yaml \
+	    --set backend.image=$$BACKEND_TAG \
+	    --set frontend.image=$$FRONTEND_TAG \
+	    --set sandbox.runtimeImage=$$RUNTIME_TAG \
+	    --set sandbox.execImage=$$EXEC_TAG \
+	    --set corpus.image=$$CORPUS_TAG \
+	    --wait --timeout 8m
 
 demo: ## Run the least-privilege demo meeting to completion (in-cluster)
 	@python3 -c "from pathlib import Path; \
