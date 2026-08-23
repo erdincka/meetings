@@ -34,6 +34,9 @@ class ModelConfig(BaseModel):
     model_name: str
     temperature: float = 0.7
     timeout_seconds: int = 60
+    # Provider-specific; empty means do not send it. See
+    # Settings.INFERENCE_REASONING_EFFORT.
+    reasoning_effort: str = ""
     # Caps a turn's spoken output. Unbounded generation stalls turns and, on
     # some providers, overruns the context window into a server error.
     max_tokens: int = 800

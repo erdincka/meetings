@@ -59,6 +59,11 @@ class BoundPersona:
             # invisibly. Failures surface as turn.error instead.
             "max_retries": 0,
         }
+        # Reasoning models otherwise spend the turn budget thinking rather than
+        # speaking, which both slows a turn and truncates it. Provider-specific,
+        # so it is only sent when configured.
+        if bind.model.reasoning_effort:
+            llm_kwargs["reasoning_effort"] = bind.model.reasoning_effort
         if bind.model.ignore_tls:
             llm_kwargs["http_async_client"] = httpx.AsyncClient(verify=False, timeout=60)
         self.llm = ChatOpenAI(**llm_kwargs)  # type: ignore[arg-type]

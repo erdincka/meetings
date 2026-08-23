@@ -152,6 +152,7 @@ def create_role_agent_node(
                 model_name=settings_obj.inference_model_name or "",
                 temperature=settings_obj.inference_temperature,
                 ignore_tls=bool(settings_obj.inference_ignore_tls),
+                reasoning_effort=settings.INFERENCE_REASONING_EFFORT,
             ),
             limits=TurnLimits(
                 retrieval_limit=settings_obj.retrieval_limits_per_agent,

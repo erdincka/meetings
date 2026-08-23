@@ -107,6 +107,12 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
         "max_retries": 0,
     }
 
+    # Without this the chair never answers: gemma4 spends the whole 300-token
+    # budget reasoning and returns truncated JSON, which surfaces as three
+    # failed attempts and a meeting that ends before it starts.
+    if settings.INFERENCE_REASONING_EFFORT:
+        llm_params["reasoning_effort"] = settings.INFERENCE_REASONING_EFFORT
+
     if getattr(model_settings, "inference_ignore_tls", False):
         from app.core.network import get_http_client, get_sync_http_client
 
