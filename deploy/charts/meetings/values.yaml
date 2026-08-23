@@ -7,6 +7,10 @@ image:
   pullPolicy: IfNotPresent
 
 backend:
+  # Overridden by `make deploy` with a content-addressed tag. A mutable
+  # `:latest` leaves the Deployment spec unchanged when the image is rebuilt, so
+  # helm upgrade has nothing to roll and the pod keeps serving stale code -- a
+  # deploy that reports success and changed nothing.
   image: meetings-backend:latest
   # Pinned to one replica: meetings.py keeps the active-meeting registry in
   # process memory, so a second replica would not see meetings owned by the
@@ -107,6 +111,11 @@ gateway:
   enabled: true
   className: envoy
   host: meetings.localtest.me
+
+# Static corpus backing search_corpus. Offline so runs stay reproducible.
+corpus:
+  enabled: true
+  image: meetings-corpus:latest
 
 logLevel: INFO
 allowVolatileCheckpoints: false

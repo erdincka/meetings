@@ -169,6 +169,71 @@ async def get_meeting_capabilities(
     )
 
 
+@router.get("/{meeting_id}/artifacts", response_model=APIResponse)
+async def list_meeting_artifacts(
+    meeting_id: UUID, session: AsyncSession = Depends(database.get_db_session)
+) -> APIResponse:
+    """Artifacts and action items produced during the meeting.
+
+    Bodies are included: charts are small PNGs and documents are short, so a
+    second round trip per artifact would cost more than it saves.
+    """
+    from app.models.artifacts import ActionItem, Artifact
+
+    artifacts = (
+        (
+            await session.execute(
+                select(Artifact)
+                .where(Artifact.meeting_id == meeting_id)
+                .order_by(Artifact.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    actions = (
+        (
+            await session.execute(
+                select(ActionItem)
+                .where(ActionItem.meeting_id == meeting_id)
+                .order_by(ActionItem.recorded_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    return APIResponse(
+        status="success",
+        data={
+            "artifacts": [
+                {
+                    "id": str(a.id),
+                    "agent_id": str(a.agent_id) if a.agent_id else None,
+                    "kind": a.kind,
+                    "title": a.title,
+                    "mime_type": a.mime_type,
+                    "body": a.body,
+                    "created_at": a.created_at.isoformat(),
+                }
+                for a in artifacts
+            ],
+            "action_items": [
+                {
+                    "id": str(i.id),
+                    "text": i.text,
+                    "due": i.due,
+                    "raised_by_agent_id": str(i.raised_by_agent_id)
+                    if i.raised_by_agent_id
+                    else None,
+                }
+                for i in actions
+            ],
+        },
+    )
+
+
 @router.delete("/{meeting_id}", response_model=APIResponse)
 async def delete_meeting(
     meeting_id: UUID, session: AsyncSession = Depends(database.get_db_session)

@@ -133,6 +133,13 @@ will work while every sandbox turn fails with a bare connection error.
 
 ## Development
 
+`make images` re-tags each build by its content digest and `make deploy` passes
+those tags through. A mutable `:latest` leaves the Deployment spec unchanged
+when an image is rebuilt, so `helm upgrade` finds nothing to roll and the pod
+keeps serving stale code — a deploy that reports success and changed nothing.
+Identical content produces the same tag, so a no-op redeploy does not churn pods
+either.
+
 ```bash
 make check          # ruff, format, mypy, pytest, helm lint, kubeconform
 make migrate-check  # fails if the ORM has drifted from the migrations

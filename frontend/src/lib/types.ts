@@ -118,3 +118,26 @@ export interface ToolAuditEntry {
   duration_ms?: number
   error?: string
 }
+
+/** Something an agent produced during the meeting. */
+export interface MeetingArtifact {
+  id: string
+  agent_id: string | null
+  kind: string
+  title: string
+  mime_type: string
+  body: string
+  created_at: string
+}
+
+export interface MeetingActionItem {
+  id: string
+  text: string
+  due: string | null
+  raised_by_agent_id: string | null
+}
+
+export interface MeetingArtifacts {
+  artifacts: MeetingArtifact[]
+  action_items: MeetingActionItem[]
+}
