@@ -16,7 +16,7 @@ env:
   # Unit tests never reach an endpoint -- the fake sandbox and a stubbed model
   # stand in -- but settings are read from the environment at import, so these
   # must be present and deterministic. Local development points the same
-  # variables at Ollama on the host; see deploy/charts/meetings/values-local.yaml.
+  # variables at Ollama on the host; see deploy/charts/meetings/values-lab.yaml.
   INFERENCE_ENDPOINT: http://inference.test/v1
   INFERENCE_MODEL_NAME: test-model
   INFERENCE_API_KEY: ""
@@ -141,6 +141,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: azure/setup-helm@v5
+      # The lab values carry real network addresses and are gitignored, so CI
+      # renders them from the committed example. That also proves the example
+      # is complete: a placeholder missing from it fails the render here rather
+      # than on someone's first clone.
+      - name: render lab config from the example
+        run: |
+          cp deploy/k3s/lab.env.example deploy/k3s/lab.env
+          python3 scripts/render.py \
+            deploy/k3s/metallb-pool.yaml.tmpl \
+            deploy/k3s/registry.yaml.tmpl \
+            deploy/bootstrap/gatewayclass.yaml.tmpl \
+            deploy/charts/meetings/values-lab.yaml.tmpl
+
       - name: helm lint
         run: helm lint deploy/charts/meetings
 
@@ -153,7 +166,7 @@ jobs:
       # including the Gateway API CRDs.
       - name: kubeconform
         run: |
-          for f in values.yaml values-local.yaml; do
+          for f in values.yaml values-lab.yaml; do
             echo "::group::$f"
             helm template meetings deploy/charts/meetings -n meetings \
               -f "deploy/charts/meetings/$f" \

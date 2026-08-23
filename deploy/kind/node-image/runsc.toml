@@ -1,3 +1,0 @@
-[runsc_config]
-  platform = "systrap"
-  ignore-cgroups = "true"

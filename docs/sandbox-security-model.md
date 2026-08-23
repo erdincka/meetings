@@ -51,6 +51,15 @@ check.**
 a template, so dropping to tier 2 or 3 on a host that cannot run runsc is a
 one-line values change. Nightly CI runs the same gate on amd64 runners.
 
+### Since moved to real nodes
+
+The nesting described above was a property of running Kubernetes nodes as
+containers inside a VM on a laptop. The cluster now runs on Proxmox VMs, each
+with its own kernel, so `runsc` is simply the container runtime and none of the
+nesting caveats apply. The gate is unchanged and still asserts on
+`/proc/version`, because a misconfigured RuntimeClass falls back to `runc`
+silently wherever it runs.
+
 ### Durability across host restarts
 
 Planning flagged a concern that a runsc setup might not survive a Rancher

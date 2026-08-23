@@ -6,63 +6,39 @@ SHELL          := /bin/bash
 # recipe would silently fall back to "command not found" -- which chart-validate
 # then reported as a clean run over zero resources.
 export PATH := $(HOME)/.rd/bin:/opt/homebrew/bin:$(PATH)
-CLUSTER        ?= meetings
-KCTX           ?= kind-$(CLUSTER)
+KCTX           ?= k3s-lab
+# Network-specific values live in deploy/k3s/lab.env, which is gitignored.
+LAB_ENV        := deploy/k3s/lab.env
+BUILDER        ?= ubuntu@$(shell sed -n 's/^BUILDER_IP=//p' $(LAB_ENV) 2>/dev/null)
+REGISTRY       ?= $(shell sed -n 's/^REGISTRY_IP=//p' $(LAB_ENV) 2>/dev/null):5000
+# Source is synced here and built natively: the laptop is arm64 and the nodes
+# are x86_64, and cross-building Python/Node images under emulation is slow
+# enough to hurt the inner loop.
+BUILDER_DIR    ?= /home/ubuntu/meetings
 KUBECTL        ?= kubectl --context $(KCTX)
 HELM           ?= helm --kube-context $(KCTX)
-NODE_IMAGE     ?= kindest-node-runsc:v1.36.1
 AGENT_SANDBOX_VER ?= v0.5.6
-CALICO_VER     ?= v3.31.1
 
 .DEFAULT_GOAL := help
 .PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox \
-        smoke-pgvector smoke-netpol deploy deploy-observed images lint test check \
+        smoke-pgvector smoke-netpol deploy deploy-observed images render lint test check \
         security migrate seed demo observability observability-down status
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-node-image: ## Build the kind node image with gVisor (runsc) baked in
-	docker build --platform linux/arm64 -t $(NODE_IMAGE) deploy/kind/node-image
-
-kind-up: node-image ## Create the local cluster and bootstrap the platform
-	@kind get clusters | grep -qx $(CLUSTER) \
-	  || kind create cluster --config deploy/kind/cluster.yaml --wait 180s
-	@$(MAKE) bootstrap
+cluster-up: ## Provision the VMs, install k3s and the platform (idempotent)
+	bash deploy/k3s/bootstrap.sh all
 	@$(MAKE) smoke
 
-kind-down: ## Delete the local cluster
-	kind delete cluster --name $(CLUSTER)
+cluster-down: ## Stop the lab VMs (does not destroy them)
+	@. ./$(LAB_ENV) && ssh -o BatchMode=yes "$$PVE_HOST" \
+	  'for id in 1030 1031 1032 1033; do qm stop $$id 2>/dev/null || true; done'
+	@echo "lab VMs stopped"
 
-bootstrap: ## Install platform prerequisites (idempotent)
-	# Calico, because kindnetd does not implement NetworkPolicy -- policies
-	# apply cleanly and are never enforced. Gate 3 proves the difference.
-	$(KUBECTL) apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/$(CALICO_VER)/manifests/calico.yaml
-	$(KUBECTL) -n kube-system rollout status daemonset/calico-node --timeout=8m
-	$(HELM) repo add jetstack https://charts.jetstack.io --force-update
-	$(HELM) repo add cnpg https://cloudnative-pg.github.io/charts --force-update
-	$(HELM) upgrade --install cert-manager jetstack/cert-manager \
-	  -n cert-manager --create-namespace --set crds.enabled=true --wait --timeout 8m
-	$(HELM) upgrade --install cnpg cnpg/cloudnative-pg \
-	  -n cnpg-system --create-namespace --wait --timeout 8m
-	# Envoy Gateway ships the Gateway API CRDs itself (crds.enabled=true).
-	# Do NOT also apply gateway-api standard-install.yaml: the two collide on
-	# field-manager ownership and the Helm install fails with a CRD conflict.
-	$(HELM) upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
-	  -n envoy-gateway-system --create-namespace --wait --timeout 8m
-	$(KUBECTL) apply -f deploy/bootstrap/gatewayclass.yaml
-	$(KUBECTL) create namespace meetings --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) apply --server-side \
-	  -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX_VER)/sandbox-with-extensions.yaml
-	$(KUBECTL) -n agent-sandbox-system rollout status deploy/agent-sandbox-controller --timeout=5m
-	# Only the release namespace: Helm needs it before it can store a release.
-	# The sandbox namespaces are owned by the chart, which also labels them for
-	# restricted Pod Security -- creating them here as well makes the chart fail
-	# to adopt them.
-	$(KUBECTL) create namespace meetings --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) apply -f deploy/bootstrap/cnpg-cluster.yaml
-	$(KUBECTL) -n meetings wait --for=condition=Ready cluster/meetings-postgres --timeout=8m
+bootstrap: ## Install/refresh the platform components only
+	bash deploy/k3s/bootstrap.sh platform
 
 smoke: smoke-gvisor smoke-netpol smoke-sandbox ## Run every fail-fast gate
 
@@ -95,27 +71,32 @@ status: ## Show cluster state at a glance
 
 # ---------------------------------------------------------------- app
 
-images: ## Build app images and load them into the kind cluster
-	bash sandbox/runtime/sync-shared.sh
-	docker build --target runtime -t meetings-backend:latest backend
-	docker build --target runtime -t meetings-frontend:latest frontend
-	docker build --target runtime -t meetings-persona-runtime:latest sandbox/runtime
-	docker build -t meetings-exec-python:latest sandbox/exec-python
-	docker build -t meetings-corpus:latest sandbox/corpus
-	# Re-tag by content digest and load *those* tags. `:latest` alone leaves the
-	# Deployment spec unchanged, so helm upgrade has nothing to roll and the old
-	# pod keeps serving old code -- a deploy that looks successful and is not.
-	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
-	  for t in $$BACKEND_TAG $$FRONTEND_TAG $$RUNTIME_TAG $$EXEC_TAG $$CORPUS_TAG; do \
-	    docker tag "$${t%%:*}:latest" "$$t"; \
-	  done; \
-	  kind load docker-image $$BACKEND_TAG $$FRONTEND_TAG $$RUNTIME_TAG \
-	    $$EXEC_TAG $$CORPUS_TAG --name $(CLUSTER)
+render: ## Render templates from deploy/k3s/lab.env
+	@python3 scripts/render.py \
+	  deploy/k3s/metallb-pool.yaml.tmpl \
+	  deploy/k3s/registry.yaml.tmpl \
+	  deploy/bootstrap/gatewayclass.yaml.tmpl \
+	  deploy/charts/meetings/values-lab.yaml.tmpl
 
-deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
+images: render ## Build images on the builder and push to the registry
+	bash sandbox/runtime/sync-shared.sh
+	rsync -az --delete \
+	  --exclude '.git' --exclude '**/node_modules' --exclude '**/.venv' \
+	  --exclude '**/__pycache__' --exclude '.local-assets' --exclude '**/.next' \
+	  ./ $(BUILDER):$(BUILDER_DIR)/
+	@ssh -o BatchMode=yes $(BUILDER) 'cd $(BUILDER_DIR) && \
+	  R=$(REGISTRY); \
+	  docker build -q --target runtime -t $$R/meetings-backend:latest backend && \
+	  docker build -q --target runtime -t $$R/meetings-frontend:latest frontend && \
+	  docker build -q --target runtime -t $$R/meetings-persona-runtime:latest sandbox/runtime && \
+	  docker build -q -t $$R/meetings-exec-python:latest sandbox/exec-python && \
+	  docker build -q -t $$R/meetings-corpus:latest sandbox/corpus' >/dev/null
+	@bash scripts/image-tags.sh --push
+
+deploy: render ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
 	  $(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
-	    -f deploy/charts/meetings/values-local.yaml \
+	    -f deploy/charts/meetings/values-lab.yaml \
 	    --set backend.image=$$BACKEND_TAG \
 	    --set frontend.image=$$FRONTEND_TAG \
 	    --set sandbox.runtimeImage=$$RUNTIME_TAG \
@@ -143,7 +124,7 @@ observability-down: ## Remove the observability stack
 deploy-observed: ## Deploy with tracing and scraping enabled
 	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
 	  $(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
-	    -f deploy/charts/meetings/values-local.yaml \
+	    -f deploy/charts/meetings/values-lab.yaml \
 	    --set backend.image=$$BACKEND_TAG \
 	    --set frontend.image=$$FRONTEND_TAG \
 	    --set sandbox.runtimeImage=$$RUNTIME_TAG \
@@ -178,7 +159,7 @@ test: ## Backend + sandbox runtime tests with coverage
 chart-validate: ## Render every values profile and validate against API schemas
 	@command -v helm >/dev/null || { echo "helm not found on PATH"; exit 1; }
 	@command -v kubeconform >/dev/null || { echo "kubeconform not found on PATH"; exit 1; }
-	@set -e; for f in values.yaml values-local.yaml; do \
+	@set -e; for f in values.yaml values-lab.yaml; do \
 	  echo ">> $$f"; \
 	  helm template meetings deploy/charts/meetings -n meetings \
 	    -f deploy/charts/meetings/$$f \
