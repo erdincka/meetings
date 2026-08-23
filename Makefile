@@ -51,11 +51,11 @@ bootstrap: ## Install platform prerequisites (idempotent)
 	$(KUBECTL) apply --server-side \
 	  -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX_VER)/sandbox-with-extensions.yaml
 	$(KUBECTL) -n agent-sandbox-system rollout status deploy/agent-sandbox-controller --timeout=5m
+	# Only the release namespace: Helm needs it before it can store a release.
+	# The sandbox namespaces are owned by the chart, which also labels them for
+	# restricted Pod Security -- creating them here as well makes the chart fail
+	# to adopt them.
 	$(KUBECTL) create namespace meetings --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) create namespace meetings-sandboxes --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) create namespace meetings-exec --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) label namespace meetings-sandboxes meetings-exec \
-	  pod-security.kubernetes.io/enforce=restricted --overwrite
 	$(KUBECTL) apply -f deploy/bootstrap/cnpg-cluster.yaml
 	$(KUBECTL) -n meetings wait --for=condition=Ready cluster/meetings-postgres --timeout=8m
 
