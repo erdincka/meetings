@@ -13,10 +13,16 @@ env:
   # Settings are read from the environment at import, so lint/test runs need
   # deterministic values rather than whatever the runner happens to have.
   DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/test
+  # Unit tests never reach an endpoint -- the fake sandbox and a stubbed model
+  # stand in -- but settings are read from the environment at import, so these
+  # must be present and deterministic. Local development points the same
+  # variables at Ollama on the host; see deploy/charts/meetings/values-local.yaml.
   INFERENCE_ENDPOINT: http://inference.test/v1
   INFERENCE_MODEL_NAME: test-model
+  INFERENCE_API_KEY: ""
   EMBEDDING_ENDPOINT: http://embedding.test/v1
   EMBEDDING_MODEL_NAME: test-embed
+  EMBEDDING_API_KEY: ""
 
 jobs:
   backend:
