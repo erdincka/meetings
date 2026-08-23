@@ -13,23 +13,33 @@
 set -euo pipefail
 export PATH="$HOME/.rd/bin:/opt/homebrew/bin:$PATH"
 
-PVE_HOST=${PVE_HOST:-root@10.1.1.3}
-STORAGE=${STORAGE:-data}
-TEMPLATE=${TEMPLATE:-9000}
-BRIDGE=${BRIDGE:-vmbr0}
-GATEWAY=${GATEWAY:-10.1.1.1}
+HERE=$(cd "$(dirname "$0")" && pwd)
+ENV_FILE="$HERE/lab.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "deploy/k3s/lab.env not found." >&2
+  echo "Copy deploy/k3s/lab.env.example to it and edit for your network." >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+
+STORAGE=${PVE_STORAGE:-data}
+TEMPLATE=${PVE_TEMPLATE:-9000}
+BRIDGE=${PVE_BRIDGE:-vmbr0}
+GATEWAY=${LAB_GATEWAY}
+NETMASK=${LAB_NETMASK:-24}
 KCTX=${KCTX:-k3s-lab}
-REGISTRY=${REGISTRY:-10.1.1.240:5000}
+REGISTRY="${REGISTRY_IP}:5000"
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_rsa.pub}
 
 # id:name:ip:cores:memoryMB:diskGB
 NODES=(
-  "1030:k3s-cp:10.1.1.30:8:16384:80"
-  "1031:k3s-w1:10.1.1.31:16:65536:200"
-  "1032:k3s-w2:10.1.1.32:16:65536:200"
+  "1030:k3s-cp:${NODE_CP_IP}:8:16384:80"
+  "1031:k3s-w1:${NODE_W1_IP}:16:65536:200"
+  "1032:k3s-w2:${NODE_W2_IP}:16:65536:200"
 )
-BUILDER="1033:k3s-builder:10.1.1.33:16:32768:200"
-SERVER_IP=10.1.1.30
+BUILDER="1033:k3s-builder:${BUILDER_IP}:16:32768:200"
+SERVER_IP=${NODE_CP_IP}
 SANDBOX_NODE=k3s-w2
 
 pve() { ssh -o BatchMode=yes "$PVE_HOST" "$@"; }
@@ -82,7 +92,7 @@ provision() {
     pve "set -e
       qm clone $TEMPLATE $id --name $name --full --storage $STORAGE
       qm set $id --cores $cores --memory $mem --cpu host --ciuser ubuntu \
-        --ipconfig0 ip=$ip/24,gw=$GATEWAY --nameserver $GATEWAY \
+        --ipconfig0 ip=$ip/$NETMASK,gw=$GATEWAY --nameserver $GATEWAY \
         --sshkeys /tmp/lab-key.pub
       qm resize $id scsi0 ${disk}G
       qm start $id" >/dev/null
@@ -195,6 +205,13 @@ platform() {
   local k="kubectl --context $KCTX"
   local h="helm --kube-context $KCTX"
   local here; here=$(cd "$(dirname "$0")" && pwd)
+
+  say "rendering templates from lab.env"
+  python3 "$here/../../scripts/render.py" \
+    "$here/metallb-pool.yaml.tmpl" \
+    "$here/registry.yaml.tmpl" \
+    "$here/../bootstrap/gatewayclass.yaml.tmpl" \
+    "$here/../charts/meetings/values-lab.yaml.tmpl"
 
   say "MetalLB"
   $h repo add metallb https://metallb.github.io/metallb --force-update >/dev/null 2>&1

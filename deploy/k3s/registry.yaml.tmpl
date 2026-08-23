@@ -60,7 +60,7 @@ metadata:
 spec:
   type: LoadBalancer
   # Pinned so the push URL never changes under you.
-  loadBalancerIP: 10.1.1.240
+  loadBalancerIP: ${REGISTRY_IP}
   selector: {app: registry}
   ports:
     - {name: http, port: 5000, targetPort: http}

@@ -7,8 +7,10 @@ SHELL          := /bin/bash
 # then reported as a clean run over zero resources.
 export PATH := $(HOME)/.rd/bin:/opt/homebrew/bin:$(PATH)
 KCTX           ?= k3s-lab
-BUILDER        ?= ubuntu@10.1.1.33
-REGISTRY       ?= 10.1.1.240:5000
+# Network-specific values live in deploy/k3s/lab.env, which is gitignored.
+LAB_ENV        := deploy/k3s/lab.env
+BUILDER        ?= ubuntu@$(shell sed -n 's/^BUILDER_IP=//p' $(LAB_ENV) 2>/dev/null)
+REGISTRY       ?= $(shell sed -n 's/^REGISTRY_IP=//p' $(LAB_ENV) 2>/dev/null):5000
 # Source is synced here and built natively: the laptop is arm64 and the nodes
 # are x86_64, and cross-building Python/Node images under emulation is slow
 # enough to hurt the inner loop.
@@ -19,7 +21,7 @@ AGENT_SANDBOX_VER ?= v0.5.6
 
 .DEFAULT_GOAL := help
 .PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox \
-        smoke-pgvector smoke-netpol deploy deploy-observed images lint test check \
+        smoke-pgvector smoke-netpol deploy deploy-observed images render lint test check \
         security migrate seed demo observability observability-down status
 
 help: ## Show available targets
@@ -31,7 +33,8 @@ cluster-up: ## Provision the VMs, install k3s and the platform (idempotent)
 	@$(MAKE) smoke
 
 cluster-down: ## Stop the lab VMs (does not destroy them)
-	@ssh -o BatchMode=yes root@10.1.1.3 'for id in 1030 1031 1032 1033; do qm stop $$id 2>/dev/null || true; done'
+	@. ./$(LAB_ENV) && ssh -o BatchMode=yes "$$PVE_HOST" \
+	  'for id in 1030 1031 1032 1033; do qm stop $$id 2>/dev/null || true; done'
 	@echo "lab VMs stopped"
 
 bootstrap: ## Install/refresh the platform components only
@@ -68,7 +71,14 @@ status: ## Show cluster state at a glance
 
 # ---------------------------------------------------------------- app
 
-images: ## Build images on the builder and push to the registry
+render: ## Render templates from deploy/k3s/lab.env
+	@python3 scripts/render.py \
+	  deploy/k3s/metallb-pool.yaml.tmpl \
+	  deploy/k3s/registry.yaml.tmpl \
+	  deploy/bootstrap/gatewayclass.yaml.tmpl \
+	  deploy/charts/meetings/values-lab.yaml.tmpl
+
+images: render ## Build images on the builder and push to the registry
 	bash sandbox/runtime/sync-shared.sh
 	rsync -az --delete \
 	  --exclude '.git' --exclude '**/node_modules' --exclude '**/.venv' \
@@ -83,7 +93,7 @@ images: ## Build images on the builder and push to the registry
 	  docker build -q -t $$R/meetings-corpus:latest sandbox/corpus' >/dev/null
 	@bash scripts/image-tags.sh --push
 
-deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
+deploy: render ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
 	  $(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
 	    -f deploy/charts/meetings/values-lab.yaml \

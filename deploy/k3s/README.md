@@ -21,24 +21,41 @@ were not obvious until they were removed:
 
 ## Layout
 
-| Node | Address | Role |
-|---|---|---|
-| k3s-cp | 10.1.1.30 | control plane, platform workloads |
-| k3s-w1 | 10.1.1.31 | application |
-| k3s-w2 | 10.1.1.32 | sandboxes — labelled `node-role=sandbox` and tainted |
-| k3s-builder | 10.1.1.33 | image builds; not part of the cluster |
+| Node | Role |
+|---|---|
+| k3s-cp | control plane, platform workloads |
+| k3s-w1 | application |
+| k3s-w2 | sandboxes — labelled `node-role=sandbox` and tainted |
+| k3s-builder | image builds; not part of the cluster |
+
+Addresses, the Proxmox host, and the inference endpoint all come from
+`lab.env`, which is gitignored. Copy `lab.env.example` and edit it before
+anything else — nothing here has a default that will work on your network.
 
 The builder exists because the development laptop is arm64 and the nodes are
 x86_64. Cross-building Python and Node images under emulation is slow enough to
 hurt the inner loop, so builds run natively on the builder and push to the
-registry at `10.1.1.240:5000`.
+registry, which MetalLB puts on a fixed LAN address.
 
 ## Rebuilding from nothing
 
-`bootstrap.sh` provisions the VMs from a Proxmox cloud-init template and
-installs k3s, gVisor and the platform. It is idempotent.
+    cp deploy/k3s/lab.env.example deploy/k3s/lab.env
+    $EDITOR deploy/k3s/lab.env
+
+`bootstrap.sh` then provisions the VMs from a Proxmox cloud-init template and
+installs k3s, gVisor and the platform. It is idempotent, and each stage runs
+separately because the expensive parts rarely need repeating when only the last
+one failed.
 
     deploy/k3s/bootstrap.sh provision   # create/refresh the VMs
     deploy/k3s/bootstrap.sh k3s         # install k3s + gVisor
     deploy/k3s/bootstrap.sh platform    # MetalLB, cert-manager, CNPG, Gateway, Agent Sandbox
     make smoke                          # prove all three gates
+
+Or `make cluster-up`, which does all of it and then runs the gates.
+
+## MetalLB and your DHCP range
+
+`METALLB_RANGE` must sit outside whatever your router hands out. An overlap
+produces address conflicts that present as intermittent, unexplained outages
+rather than as anything obviously network-related.

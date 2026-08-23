@@ -141,6 +141,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: azure/setup-helm@v5
+      # The lab values carry real network addresses and are gitignored, so CI
+      # renders them from the committed example. That also proves the example
+      # is complete: a placeholder missing from it fails the render here rather
+      # than on someone's first clone.
+      - name: render lab config from the example
+        run: |
+          cp deploy/k3s/lab.env.example deploy/k3s/lab.env
+          python3 scripts/render.py \
+            deploy/k3s/metallb-pool.yaml.tmpl \
+            deploy/k3s/registry.yaml.tmpl \
+            deploy/bootstrap/gatewayclass.yaml.tmpl \
+            deploy/charts/meetings/values-lab.yaml.tmpl
+
       - name: helm lint
         run: helm lint deploy/charts/meetings
 

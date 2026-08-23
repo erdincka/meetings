@@ -11,25 +11,25 @@ image:
 # Overridden by `make deploy` with content-addressed tags. These defaults exist
 # so `helm template` works without a cluster.
 backend:
-  image: 10.1.1.240:5000/meetings-backend:latest
+  image: ${REGISTRY_IP}:5000/meetings-backend:latest
 frontend:
-  image: 10.1.1.240:5000/meetings-frontend:latest
+  image: ${REGISTRY_IP}:5000/meetings-frontend:latest
 
 sandbox:
-  runtimeImage: 10.1.1.240:5000/meetings-persona-runtime:latest
-  execImage: 10.1.1.240:5000/meetings-exec-python:latest
+  runtimeImage: ${REGISTRY_IP}:5000/meetings-persona-runtime:latest
+  execImage: ${REGISTRY_IP}:5000/meetings-exec-python:latest
   # Real nodes with their own kernels: gVisor is simply the runtime here, not a
   # four-deep nesting experiment.
   runtimeClassName: gvisor
 
 corpus:
   enabled: true
-  image: 10.1.1.240:5000/meetings-corpus:latest
+  image: ${REGISTRY_IP}:5000/meetings-corpus:latest
 
 gateway:
   # MetalLB assigns a real LAN address, so this resolves for anyone on the
   # network. Point a DNS record at the Gateway's IP to use a nicer name.
-  host: meetings.lab
+  host: ${APP_HOST}
 
 inference:
   # Ollama on the development laptop. It has GPU acceleration these 2016-era
@@ -37,17 +37,17 @@ inference:
   # cost of the demo only working while that machine is on the network.
   #
   # Start it with: OLLAMA_HOST=0.0.0.0 ollama serve
-  endpoint: "http://10.1.1.123:11434/v1"
-  modelName: "gemma4:e4b"
+  endpoint: "http://${INFERENCE_HOST}:${INFERENCE_PORT}/v1"
+  modelName: "${INFERENCE_MODEL}"
   timeoutSeconds: 300
   embedding:
-    endpoint: "http://10.1.1.123:11434/v1"
-    modelName: "nomic-embed-text"
-    dimensions: 768
+    endpoint: "http://${INFERENCE_HOST}:${INFERENCE_PORT}/v1"
+    modelName: "${EMBEDDING_MODEL}"
+    dimensions: ${EMBEDDING_DIMENSIONS}
   # Sandboxes are default-deny egress and NetworkPolicy matches addresses, not
   # names. Without this every sandbox turn fails with a bare connection error
   # while the backend, which is not sandboxed, works fine.
   egressCIDRs:
-    - "10.1.1.123/32"
+    - "${INFERENCE_EGRESS_CIDRS}"
 
 logLevel: DEBUG

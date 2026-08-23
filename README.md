@@ -75,6 +75,7 @@ Requires Docker (any provider), and an Apple Silicon or amd64 host.
 
 ```bash
 brew install kubectl helm kubeconform uv
+cp deploy/k3s/lab.env.example deploy/k3s/lab.env   # then edit for your network
 make cluster-up   # provisions the VMs, installs k3s + gVisor + the platform, runs the gates
 make images       # builds on the amd64 builder, pushes to the in-cluster registry
 make deploy       # installs the chart; migrations run as a pre-upgrade hook
@@ -84,7 +85,9 @@ make seed         # loads reference personas, documents and templates
 The cluster is three k3s nodes plus a builder on Proxmox — see
 [deploy/k3s/README.md](deploy/k3s/README.md) for the layout and why it replaced
 a laptop-hosted `kind` cluster. Once deployed the app is on a real LAN address
-rather than behind a port-forward.
+rather than behind a port-forward. Network-specific values live in `lab.env`,
+which is gitignored — the committed example uses documentation addresses and
+will not work anywhere unedited.
 
 `make cluster-up` refuses to continue unless three gates pass:
 
