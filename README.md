@@ -8,9 +8,9 @@ Secrets — rather than by asking it nicely in a prompt.
 Built on the [Kubernetes Agent Sandbox](https://agent-sandbox.sigs.k8s.io/)
 project (SIG Apps), CloudNativePG, and Gateway API.
 
-> **Status:** actively being rebuilt. Phase 0 (cluster foundation) and Phase 1
-> (engineering baseline) are complete. The sandbox execution model lands in
-> Phases 2–3. See [Roadmap](#roadmap).
+> **Status:** actively being rebuilt. Phases 0–2 are complete: every agent turn
+> now executes inside its own gVisor-isolated Sandbox pod. The per-persona
+> least-privilege model lands in Phase 3. See [Roadmap](#roadmap).
 
 ## The idea
 
@@ -93,19 +93,33 @@ make seed         # loads reference personas, documents and templates
 
 ### Inference
 
-Two profiles, selected by values file:
+Any OpenAI-compatible endpoint. There is no in-cluster model server: serving a
+model well is a different problem from orchestrating agents, and running both on
+one small machine makes the demo compete with the sandboxes it exists to serve.
+
+For local development, run Ollama on your own machine — where it also gets GPU
+acceleration:
 
 ```bash
-# Any OpenAI-compatible endpoint (default)
+OLLAMA_HOST=0.0.0.0 ollama serve
+```
+
+`values-local.yaml` points at it. Credentials are optional; local providers need
+none.
+
+For a hosted endpoint:
+
+```bash
 kubectl -n meetings create secret generic meetings-runtime \
   --from-literal=INFERENCE_API_KEY=... --from-literal=EMBEDDING_API_KEY=...
 helm upgrade meetings deploy/charts/meetings -n meetings \
   --set inference.endpoint=https://... --set inference.modelName=...
-
-# Fully local, no API key
-helm upgrade meetings deploy/charts/meetings -n meetings \
-  -f deploy/charts/meetings/values-ollama.yaml
 ```
+
+One sharp edge worth knowing: sandboxes run under a default-deny egress policy,
+and **NetworkPolicy matches addresses, not DNS names**. Set
+`inference.egressCIDRs` to whatever your endpoint resolves to, or the backend
+will work while every sandbox turn fails with a bare connection error.
 
 ## Platform
 
@@ -137,8 +151,8 @@ the UI. Attempting to set a credential through the settings API is a 422.
 |---|---|---|
 | 0 | kind + gVisor + Agent Sandbox + CNPG/pgvector, fail-fast gates | ✅ done |
 | 1 | Config/secrets, Alembic, typed models, probes, CI, first tests | ✅ done |
-| 2 | Persona runtime image; agent turns execute inside sandboxes | next |
-| 3 | Full tool suite; Kubernetes-enforced least privilege; audit matrix | |
+| 2 | Persona runtime image; agent turns execute inside sandboxes | ✅ done |
+| 3 | Full tool suite; Kubernetes-enforced least privilege; audit matrix | next |
 | 4 | Persona depth — every editable field actually reaches a prompt | |
 | 5 | OpenTelemetry across all three tiers; Prometheus + Grafana | |
 | 6 | Integration/e2e depth, operator auth, signed multi-arch images | |
