@@ -16,7 +16,7 @@ env:
   # Unit tests never reach an endpoint -- the fake sandbox and a stubbed model
   # stand in -- but settings are read from the environment at import, so these
   # must be present and deterministic. Local development points the same
-  # variables at Ollama on the host; see deploy/charts/meetings/values-local.yaml.
+  # variables at Ollama on the host; see deploy/charts/meetings/values-lab.yaml.
   INFERENCE_ENDPOINT: http://inference.test/v1
   INFERENCE_MODEL_NAME: test-model
   INFERENCE_API_KEY: ""
@@ -153,7 +153,7 @@ jobs:
       # including the Gateway API CRDs.
       - name: kubeconform
         run: |
-          for f in values.yaml values-local.yaml; do
+          for f in values.yaml values-lab.yaml; do
             echo "::group::$f"
             helm template meetings deploy/charts/meetings -n meetings \
               -f "deploy/charts/meetings/$f" \

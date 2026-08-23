@@ -36,11 +36,56 @@ fqdn=$(k -n "$NS" get sandbox "$NAME" -o jsonpath='{.status.serviceFQDN}')
 [[ -n "$fqdn" ]] || { echo "FAIL: no status.serviceFQDN"; exit 1; }
 echo "  serviceFQDN: $fqdn"
 
-if ! k -n meetings run smoke-dnsprobe --rm -i --restart=Never --image=busybox:1.37 \
-     --command -- wget -q -T 10 -O /dev/null "http://${fqdn}:8080/" 2>/dev/null; then
+# Run the probe as a Job and read its exit code, rather than `kubectl run
+# --rm -i`. That form races with a pod that exits quickly -- the container is
+# gone before the log stream attaches, and the gate reports a failure that never
+# happened. The probe is also hardened, so it runs unchanged in a namespace
+# with restricted Pod Security admission.
+k -n meetings delete job smoke-dnsprobe --ignore-not-found >/dev/null 2>&1
+cat <<PROBE | k apply -f - >/dev/null
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smoke-dnsprobe
+  namespace: meetings
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: probe
+          image: busybox:1.37
+          # Retries briefly: cluster DNS for a freshly created headless
+          # Service can lag the pod becoming ready by a second or two.
+          command:
+            - sh
+            - -c
+            - |
+              for i in \$(seq 1 15); do
+                wget -q -T 5 -O /dev/null "http://${fqdn}:8080/" && exit 0
+                sleep 2
+              done
+              exit 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+PROBE
+
+if ! k -n meetings wait --for=condition=complete job/smoke-dnsprobe --timeout=90s >/dev/null 2>&1; then
   echo "FAIL: sandbox not reachable at ${fqdn}:8080"
+  k -n meetings logs job/smoke-dnsprobe 2>&1 | tail -5
+  k -n meetings delete job smoke-dnsprobe --ignore-not-found >/dev/null 2>&1
   exit 1
 fi
+k -n meetings delete job smoke-dnsprobe --ignore-not-found >/dev/null 2>&1
+
 echo "  reachable over cluster DNS: yes"
 
 echo "SANDBOX-OK"

@@ -1,8 +1,8 @@
 # Envoy Gateway installs the Gateway API CRDs and its controller, but does not
 # create a GatewayClass -- that is left to the platform owner.
 #
-# This is precisely what was missing on the k3s cluster this replaces: the
-# Gateway API CRDs were present (installed by Traefik) but there was no
+# This is precisely what was missing on the k3s cluster this project first ran
+# on: the Gateway API CRDs were present (installed by Traefik) but there was no
 # GatewayClass and Traefik was never started with --providers.kubernetesgateway,
 # so the whole Gateway API surface was inert.
 apiVersion: gateway.networking.k8s.io/v1
@@ -11,33 +11,34 @@ metadata:
   name: envoy
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
-  # Pins the data-plane Service shape; see below.
   parametersRef:
     group: gateway.envoyproxy.io
     kind: EnvoyProxy
-    name: kind-nodeport
+    name: lan-loadbalancer
     namespace: envoy-gateway-system
 ---
-# kind has no LoadBalancer implementation, so an EXTERNAL-IP never arrives and
-# the Service falls back to a randomly allocated NodePort. deploy/kind/cluster.yaml
-# maps host :80 -> node :30080, so the port has to be fixed to line up.
+# The data-plane Service shape.
+#
+# On the previous kind cluster this pinned a NodePort, because kind has no
+# LoadBalancer implementation and the port had to line up with a host port
+# mapping. MetalLB assigns a real address from the LAN, so the Gateway is simply
+# browsable from any machine on the network and the port-mapping workaround is
+# gone.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
-  name: kind-nodeport
+  name: lan-loadbalancer
   namespace: envoy-gateway-system
 spec:
   provider:
     type: Kubernetes
     kubernetes:
       envoyService:
-        type: NodePort
+        type: LoadBalancer
+        # Pinned so the address does not move between rebuilds; it must sit
+        # inside the MetalLB pool declared in deploy/k3s/metallb-pool.yaml.
         patch:
           type: StrategicMerge
           value:
             spec:
-              ports:
-                - name: http-80
-                  port: 80
-                  targetPort: 10080
-                  nodePort: 30080
+              loadBalancerIP: 10.1.1.241

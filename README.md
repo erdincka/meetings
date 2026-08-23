@@ -74,14 +74,19 @@ Two design rules make this coherent:
 Requires Docker (any provider), and an Apple Silicon or amd64 host.
 
 ```bash
-brew install kind kubectl helm kubeconform uv
-make kind-up      # builds the gVisor node image, creates the cluster, bootstraps, gates
-make images       # builds app images into the cluster
+brew install kubectl helm kubeconform uv
+make cluster-up   # provisions the VMs, installs k3s + gVisor + the platform, runs the gates
+make images       # builds on the amd64 builder, pushes to the in-cluster registry
 make deploy       # installs the chart; migrations run as a pre-upgrade hook
 make seed         # loads reference personas, documents and templates
 ```
 
-`make kind-up` refuses to continue unless two gates pass:
+The cluster is three k3s nodes plus a builder on Proxmox — see
+[deploy/k3s/README.md](deploy/k3s/README.md) for the layout and why it replaced
+a laptop-hosted `kind` cluster. Once deployed the app is on a real LAN address
+rather than behind a port-forward.
+
+`make cluster-up` refuses to continue unless three gates pass:
 
 - **`smoke-gvisor`** asserts `/proc/version` reports gVisor. A misconfigured
   RuntimeClass handler *silently falls back to runc* on some setups, producing a
@@ -90,6 +95,9 @@ make seed         # loads reference personas, documents and templates
 - **`smoke-sandbox`** drives a real `Sandbox` through the controller and reaches
   it over cluster DNS, exercising the CRD, controller, warm path and SDK before
   a line of application code is involved.
+- **`smoke-netpol`** asserts a deny-all NetworkPolicy actually blocks traffic.
+  Every CNI accepts policy objects; not every CNI enforces them, and one that
+  quietly ignores them looks identical from the outside.
 
 ### Inference
 
@@ -104,7 +112,7 @@ acceleration:
 OLLAMA_HOST=0.0.0.0 ollama serve
 ```
 
-`values-local.yaml` points at it. Credentials are optional; local providers need
+`values-lab.yaml` points at it. Credentials are optional; local providers need
 none.
 
 For a hosted endpoint:
@@ -125,16 +133,17 @@ will work while every sandbox turn fails with a bare connection error.
 
 | Component | Choice | Why |
 |---|---|---|
-| Cluster | kind + custom node image with `runsc` | gVisor works nested on Apple Silicon; verified |
+| Cluster | 3-node k3s on Proxmox VMs | Real nodes with their own kernels, so `runsc` is simply the runtime |
 | Sandboxes | Agent Sandbox v0.5.6 (`agents.x-k8s.io/v1beta1`) | The emerging standard for agent isolation on Kubernetes |
 | Database | CloudNativePG 1.30, Postgres 18 | pgvector arrives as a declarative **ImageVolume** extension, not a custom-baked image |
-| Ingress | Gateway API + Envoy Gateway | Portable, and handles the WebSocket upgrade the transcript stream needs |
+| Ingress | Gateway API + Envoy Gateway + MetalLB | A real LoadBalancer address on the LAN, and the WebSocket upgrade the transcript stream needs |
 | Migrations | Alembic, as a Helm pre-upgrade hook | Schema changes are explicit and reviewable, not a startup side effect |
 
 ## Development
 
-`make images` re-tags each build by its content digest and `make deploy` passes
-those tags through. A mutable `:latest` leaves the Deployment spec unchanged
+`make images` builds on the amd64 builder, tags each image by its content
+digest, and pushes to the in-cluster registry; `make deploy` passes those tags
+through. A mutable `:latest` leaves the Deployment spec unchanged
 when an image is rebuilt, so `helm upgrade` finds nothing to roll and the pod
 keeps serving stale code — a deploy that reports success and changed nothing.
 Identical content produces the same tag, so a no-op redeploy does not churn pods

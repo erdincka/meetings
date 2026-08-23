@@ -39,7 +39,16 @@ spec:
               drop: ["ALL"]
           command: ["python3", "-m", "http.server", "8080"]
           ports:
-            - containerPort: 8080
+            - name: http
+              containerPort: 8080
+          # Without this, the Sandbox reports Ready as soon as the container
+          # starts -- which is not the same as the server accepting connections.
+          # The gate then probes a socket that is not listening yet and reports
+          # a failure that is really a race.
+          readinessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 2
+            failureThreshold: 30
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits:   {cpu: 500m, memory: 256Mi}
