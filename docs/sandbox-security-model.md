@@ -116,6 +116,39 @@ Capability follows the job, not the rank.
 Layers 3 and 4 compose: a persona without the credential also has no route to
 use one, so a DSN leaked into a prompt is useless to the wrong profile.
 
+### The demo, measured
+
+Calling the *same tool* from two profiles, through the real code path:
+
+```
+profile=quant    -> hello from the exec sandbox
+profile=counsel  -> DENIED_BY_CLUSTER: this persona is not permitted to
+                    execute code. The Kubernetes API server refused the
+                    sandbox claim.
+```
+
+And what the exec tier itself can reach, from inside it:
+
+| database | backend | inference endpoint |
+|---|---|---|
+| blocked | blocked | blocked |
+
+A real chart is produced end to end: model-authored matplotlib runs in the
+network-isolated tier and returns a 36KB PNG, which becomes a meeting artifact.
+
+### Why every profile may reach the API server
+
+An earlier version blocked apiserver egress for profiles without the
+code-execution grant. It was marginally stronger and clearly wrong.
+
+RBAC is the authoritative control. Letting the request reach the apiserver means
+a refusal comes back as a fast, unambiguous 403 that the agent can report and
+the audit matrix can display. Blocking it at the network instead produced a
+60-second connection timeout: the turn stalled, and a policy decision became
+indistinguishable from an outage.
+
+A denial nobody can see is a control nobody can trust, so legibility won.
+
 ### A correction worth recording
 
 An earlier version of this document claimed NetworkPolicy enforcement had been

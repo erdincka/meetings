@@ -17,11 +17,13 @@ RUN pip install --no-cache-dir \
 RUN groupadd --gid 1001 exec && useradd --uid 1001 --gid 1001 --create-home exec
 
 COPY runner.py /opt/runner.py
-RUN chmod 0444 /opt/runner.py
+COPY server.py /opt/server.py
+RUN chmod 0444 /opt/runner.py /opt/server.py
 
 USER 1001
 WORKDIR /work
+EXPOSE 8080
 
-# Idles until a job is placed in the workspace. The persona sandbox writes the
-# job, runs the snippet, and collects the output.
-CMD ["sleep", "infinity"]
+# Accepts a job, runs it, returns the result. The only way into this tier --
+# it has no egress at all.
+CMD ["python", "/opt/server.py"]

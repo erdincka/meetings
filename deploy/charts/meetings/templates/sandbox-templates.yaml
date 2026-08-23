@@ -105,15 +105,35 @@ spec:
           - {protocol: TCP, port: 5432}
       {{- end }}
       {{- if $profile.canExecuteCode }}
-      # Claiming an exec sandbox is an apiserver call. RBAC decides whether it
-      # is permitted; this only decides whether the request can leave the pod.
+      # Delivering a job to a claimed exec sandbox and collecting its output.
+      # Only profiles that may execute code need this route; RBAC already
+      # decides whether they can obtain a sandbox to talk to at all.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ $root.Values.sandbox.execNamespace }}
+        ports:
+          - {protocol: TCP, port: 8080}
+      {{- end }}
+      # The apiserver, for every profile -- including those that may not execute
+      # code.
+      #
+      # It is tempting to block this for profiles without the grant, and it
+      # would be marginally stronger. It is the wrong trade. RBAC is the
+      # authoritative control here, and letting the request reach the apiserver
+      # means a refusal comes back as a fast, unambiguous 403 that the agent can
+      # report and the audit matrix can display. Blocking it at the network
+      # instead produces a connection timeout: the turn stalls, and a policy
+      # decision becomes indistinguishable from an outage.
+      #
+      # Making the denial legible is worth more than the extra layer, because a
+      # denial nobody can see is a control nobody can trust.
       - to:
           - ipBlock:
               cidr: 0.0.0.0/0
         ports:
           - {protocol: TCP, port: 443}
           - {protocol: TCP, port: 6443}
-      {{- end }}
       # The inference endpoint. NetworkPolicy matches addresses, not names.
       {{- with $root.Values.inference.egressCIDRs }}
       - to:

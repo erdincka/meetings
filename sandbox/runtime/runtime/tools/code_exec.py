@@ -18,7 +18,6 @@ reaching nothing.
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from typing import Any
@@ -31,6 +30,7 @@ logger = structlog.get_logger(__name__)
 EXEC_NAMESPACE = os.getenv("SANDBOX_EXEC_NAMESPACE", "meetings-exec")
 EXEC_WARM_POOL = os.getenv("SANDBOX_EXEC_WARM_POOL", "exec-python")
 EXEC_TIMEOUT_SECONDS = int(os.getenv("SANDBOX_EXEC_TIMEOUT", "60"))
+EXEC_PORT = int(os.getenv("SANDBOX_EXEC_PORT", "8080"))
 
 # Recognisable in logs and in the audit matrix, so a denial reads as a policy
 # decision rather than an unexplained failure.
@@ -140,29 +140,21 @@ async def _claim_exec_sandbox(*, agent_id: str, meeting_id: str) -> Any:
 
 
 async def _run_in_sandbox(handle: Any, code: str) -> dict[str, Any]:
-    """Write the job, run it, and collect whatever it produced."""
-    import asyncio
-    import base64
+    """Send the job to the exec sandbox and collect the result.
 
-    def _execute() -> dict[str, Any]:
-        handle.files.write("/work/in/job.json", json.dumps({"code": code, "inputs": {}}))
-        handle.commands.run(
-            f"timeout {EXEC_TIMEOUT_SECONDS} python /opt/runner.py",
-        )
-        raw = handle.files.read("/work/out/result.json")
-        result: dict[str, Any] = json.loads(raw)
+    Talks to the sandbox's own small job server rather than the SDK's file and
+    command transport, which needs a helper this image does not carry. A direct
+    HTTP call keeps the security boundary independent of SDK internals: the
+    exec tier still has no egress, and this is the only route in.
+    """
+    import httpx
 
-        # Binary output is base64'd on the way back; text is passed through.
-        artifacts: dict[str, str] = {}
-        for filename in result.get("files", []):
-            content = handle.files.read(f"/work/out/{filename}")
-            artifacts[filename] = (
-                base64.b64encode(content).decode() if isinstance(content, bytes) else str(content)
-            )
-        result["artifacts"] = artifacts
-        return result
-
-    return await asyncio.to_thread(_execute)
+    base = f"http://{handle.get_pod_ip()}:{EXEC_PORT}"
+    async with httpx.AsyncClient(timeout=EXEC_TIMEOUT_SECONDS + 30) as client:
+        response = await client.post(f"{base}/run", json={"code": code, "inputs": {}})
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+    return result
 
 
 async def _release(handle: Any) -> None:
