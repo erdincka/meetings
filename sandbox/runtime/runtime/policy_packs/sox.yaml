@@ -1,0 +1,17 @@
+# Financial-reporting controls.
+rules:
+  - id: SOX-001
+    severity: high
+    pattern: '\b(adjust|restate|reclassify|defer)\b[^.]{0,60}\b(revenue|earnings|results)\b'
+    message: An adjustment to reported figures is proposed.
+    remediation: Route through the disclosure committee; do not agree it in this meeting.
+  - id: SOX-002
+    severity: high
+    pattern: '\b(before|ahead of|prior to)\b[^.]{0,40}\b(announcement|filing|earnings call)\b'
+    message: Action is proposed ahead of a public announcement.
+    remediation: Confirm this is not selective disclosure, and record who was told when.
+  - id: SOX-003
+    severity: medium
+    pattern: '\b(bypass|skip|waive|override)\b[^.]{0,40}\b(control|approval|sign-off|review)\b'
+    message: Bypassing a financial control is proposed.
+    remediation: An exception needs documented approval; note who authorised it.

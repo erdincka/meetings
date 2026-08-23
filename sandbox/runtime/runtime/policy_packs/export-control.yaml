@@ -1,0 +1,12 @@
+# Trade and sanctions exposure.
+rules:
+  - id: EXP-001
+    severity: high
+    pattern: '\b(Iran|North Korea|Syria|Cuba|Crimea|Belarus)\b'
+    message: A sanctioned or restricted destination is named.
+    remediation: Screen the counterparty and route through trade compliance first.
+  - id: EXP-002
+    severity: medium
+    pattern: '\b(dual[- ]use|ITAR|EAR99|ECCN)\b'
+    message: Export-controlled classification is referenced.
+    remediation: Confirm the classification and licence position before committing.

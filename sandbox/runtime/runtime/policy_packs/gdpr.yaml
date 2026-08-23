@@ -1,0 +1,24 @@
+# Data-protection rules. Pattern-matched, so they catch the obvious and
+# well-known shapes -- they are a first pass before a human reads it, not a
+# substitute for one.
+rules:
+  - id: GDPR-001
+    severity: high
+    pattern: '\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b'
+    message: A personal email address appears in the text.
+    remediation: Replace with a role address, or remove it before circulating.
+  - id: GDPR-002
+    severity: high
+    pattern: '\b\d{2}[-/ ]?\d{2}[-/ ]?\d{2}\b(?=.*\bNI\b|.*national insurance)'
+    message: What looks like a national insurance number appears in the text.
+    remediation: Remove the identifier; refer to the individual by role.
+  - id: GDPR-003
+    severity: medium
+    pattern: '\b(home address|date of birth|medical record|health record)\b'
+    message: A special category of personal data is referenced.
+    remediation: Confirm a lawful basis before including this in a circulated document.
+  - id: GDPR-004
+    severity: medium
+    pattern: '\b(transfer|send|share)\b[^.]{0,60}\b(outside the EU|to the US|third country)\b'
+    message: An international transfer of personal data is described.
+    remediation: Record the transfer mechanism (adequacy, SCCs) alongside the decision.

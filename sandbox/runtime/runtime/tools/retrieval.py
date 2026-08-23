@@ -23,7 +23,10 @@ def build_retrieval_tool(
     meeting_id: str,
     library_access: bool,
     limit: int,
+    **_ignored: object,
 ) -> StructuredTool:
+    # Every builder receives the same context dict and takes what it needs, so
+    # adding a key for one tool must not break the others.
     async def retrieve_documents(
         query: str,
         search_company_library: bool = True,
