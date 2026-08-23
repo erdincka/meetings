@@ -1,124 +1,157 @@
 {{/*
-Capability profiles.
+Per-profile sandbox provisioning.
 
-One runtime image serves every profile. What a given sandbox may actually do is
-decided here -- the mounted capability file, the ServiceAccount it runs as, and
-(from Phase 3) its NetworkPolicy and Secret mounts -- not by which image it
-runs. That separation is the point of the whole design, so it is worth stating
-plainly rather than burying in values.
+One runtime image serves every profile. What a sandbox may actually do is
+decided entirely here -- the capability file it mounts, the ServiceAccount it
+runs as, the Secrets its template references, and the NetworkPolicy applied to
+it. Nothing about the image differs.
 
-Phase 2 ships the baseline profile only. Phase 3 adds analyst, counsel,
-strategist and chief, which is where the least-privilege story becomes visible.
+Profiles come from profiles.yaml, generated from
+backend/app/orchestration/profiles.py so the tools the runtime registers and the
+Kubernetes objects that enforce them cannot drift apart.
 */}}
+{{- $root := . }}
+{{- range $profile := .Values.profiles }}
+{{- $sa := printf "persona-%s" $profile.name }}
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: persona-baseline
-  namespace: {{ .Values.sandbox.namespace }}
-  labels: {{- include "meetings.labels" . | nindent 4 }}
+  name: {{ $sa }}
+  namespace: {{ $root.Values.sandbox.namespace }}
+  labels: {{- include "meetings.labels" $root | nindent 4 }}
+    meetings/profile: {{ $profile.name }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: persona-baseline-capabilities
-  namespace: {{ .Values.sandbox.namespace }}
-  labels: {{- include "meetings.labels" . | nindent 4 }}
+  name: {{ $sa }}-capabilities
+  namespace: {{ $root.Values.sandbox.namespace }}
+  labels: {{- include "meetings.labels" $root | nindent 4 }}
 data:
   # The runtime intersects the backend's grant with this list, so a compromised
   # or buggy backend cannot enable a tool this profile was not provisioned for.
   capabilities: |
-    retrieve_documents
+    {{- range $profile.tools }}
+    {{ . }}
+    {{- end }}
 ---
-# SandboxTemplate and SandboxWarmPool are extension CRDs and live in
-# extensions.agents.x-k8s.io. Only the core Sandbox kind is in agents.x-k8s.io.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
-  name: persona-baseline
-  namespace: {{ .Values.sandbox.namespace }}
-  labels: {{- include "meetings.labels" . | nindent 4 }}
+  name: {{ $sa }}
+  namespace: {{ $root.Values.sandbox.namespace }}
+  labels: {{- include "meetings.labels" $root | nindent 4 }}
+    meetings/profile: {{ $profile.name }}
 spec:
-  # Publishes a per-sandbox Service. The backend reaches persona runtimes over
-  # cluster DNS; the Sandbox Router is only needed from outside the cluster,
-  # where port-forward is unusable because it is incompatible with gVisor.
   service: true
 
-  # Declared explicitly rather than left to the controller.
-  #
-  # With networkPolicyManagement defaulting to Managed and no policy given, the
-  # controller synthesises a sensible default: ingress only from the Sandbox
-  # Router, egress to the public internet with every RFC1918 range excluded.
-  # That assumes all traffic goes through the Router. This design calls persona
-  # runtimes directly over cluster DNS, so the two paths it actually needs are
-  # opened here and nothing else is.
-  #
-  # This field is the fourth of the five enforcement layers, and the one Phase 3
-  # uses to give each capability profile a different reachable surface -- an
-  # analyst may reach Postgres, a baseline persona may not, so a stolen DSN is
-  # useless to the wrong profile.
+  {{/*
+  Declared explicitly rather than left to the controller. With no policy given
+  the controller synthesises one that allows ingress only from the Sandbox
+  Router; this design calls persona runtimes directly over cluster DNS.
+
+  This is enforcement layer 4, and the per-profile differences below are what
+  make a stolen credential useless to the wrong profile.
+  */}}
   networkPolicy:
     ingress:
-      # Only the backend may drive a turn.
       - from:
           - namespaceSelector:
               matchLabels:
-                kubernetes.io/metadata.name: {{ .Release.Namespace }}
+                kubernetes.io/metadata.name: {{ $root.Release.Namespace }}
             podSelector:
               matchLabels:
-                app.kubernetes.io/name: {{ include "meetings.name" . }}
+                app.kubernetes.io/name: {{ include "meetings.name" $root }}
                 app.kubernetes.io/component: backend
         ports:
           - protocol: TCP
             port: 8080
-      # The controller's own reconciliation and the Router, if deployed.
       - from:
           - namespaceSelector:
               matchLabels:
                 kubernetes.io/metadata.name: agent-sandbox-system
     egress:
-      # Cluster DNS.
       - to:
           - namespaceSelector:
               matchLabels:
                 kubernetes.io/metadata.name: kube-system
         ports:
-          - protocol: UDP
-            port: 53
-          - protocol: TCP
-            port: 53
-      # The backend's internal API: retrieval, artifacts, action items. This is
-      # the only in-cluster destination a baseline persona may reach -- notably
-      # NOT Postgres, which it has no credential for either.
+          - {protocol: UDP, port: 53}
+          - {protocol: TCP, port: 53}
+      # The backend's internal API: retrieval, artifacts, action items.
       - to:
           - namespaceSelector:
               matchLabels:
-                kubernetes.io/metadata.name: {{ .Release.Namespace }}
+                kubernetes.io/metadata.name: {{ $root.Release.Namespace }}
             podSelector:
               matchLabels:
-                app.kubernetes.io/name: {{ include "meetings.name" . }}
+                app.kubernetes.io/name: {{ include "meetings.name" $root }}
                 app.kubernetes.io/component: backend
         ports:
-          - protocol: TCP
-            port: 8000
-      # The inference endpoint. NetworkPolicy cannot match DNS names, so this
-      # comes from values as explicit CIDRs -- see inference.egressCIDRs.
-      {{- with .Values.inference.egressCIDRs }}
+          - {protocol: TCP, port: 8000}
+      {{- if $profile.needsMetricsDsn }}
+      # Only metrics-capable profiles may reach Postgres at all. A baseline
+      # persona that somehow obtained the DSN still cannot use it: its packets
+      # to 5432 are dropped before they leave the pod.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ $root.Release.Namespace }}
+            podSelector:
+              matchLabels:
+                cnpg.io/cluster: meetings-postgres
+        ports:
+          - {protocol: TCP, port: 5432}
+      {{- end }}
+      {{- if $profile.canExecuteCode }}
+      # Delivering a job to a claimed exec sandbox and collecting its output.
+      # Only profiles that may execute code need this route; RBAC already
+      # decides whether they can obtain a sandbox to talk to at all.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ $root.Values.sandbox.execNamespace }}
+        ports:
+          - {protocol: TCP, port: 8080}
+      {{- end }}
+      # The apiserver, for every profile -- including those that may not execute
+      # code.
+      #
+      # It is tempting to block this for profiles without the grant, and it
+      # would be marginally stronger. It is the wrong trade. RBAC is the
+      # authoritative control here, and letting the request reach the apiserver
+      # means a refusal comes back as a fast, unambiguous 403 that the agent can
+      # report and the audit matrix can display. Blocking it at the network
+      # instead produces a connection timeout: the turn stalls, and a policy
+      # decision becomes indistinguishable from an outage.
+      #
+      # Making the denial legible is worth more than the extra layer, because a
+      # denial nobody can see is a control nobody can trust.
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+        ports:
+          - {protocol: TCP, port: 443}
+          - {protocol: TCP, port: 6443}
+      # The inference endpoint. NetworkPolicy matches addresses, not names.
+      {{- with $root.Values.inference.egressCIDRs }}
       - to:
           {{- range . }}
           - ipBlock:
               cidr: {{ . | quote }}
           {{- end }}
       {{- end }}
+
   podTemplate:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ include "meetings.name" . }}
+        app.kubernetes.io/name: {{ include "meetings.name" $root }}
         app.kubernetes.io/component: persona-sandbox
+        meetings/profile: {{ $profile.name }}
     spec:
-      serviceAccountName: persona-baseline
-      # Never hardcode gvisor: hosts without runsc fall back to crun (user
-      # namespaces) or runc. See docs/sandbox-security-model.md.
-      runtimeClassName: {{ .Values.sandbox.runtimeClassName }}
+      serviceAccountName: {{ $sa }}
+      runtimeClassName: {{ $root.Values.sandbox.runtimeClassName }}
       automountServiceAccountToken: true
       nodeSelector:
         node-role: sandbox
@@ -135,8 +168,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: runtime
-          image: {{ include "meetings.image" (dict "registry" .Values.image.registry "image" .Values.sandbox.runtimeImage) }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ include "meetings.image" (dict "registry" $root.Values.image.registry "image" $root.Values.sandbox.runtimeImage) }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -147,17 +180,22 @@ spec:
               containerPort: 8080
           env:
             - name: BACKEND_INTERNAL_URL
-              value: "http://{{ include "meetings.name" . }}-backend.{{ .Release.Namespace }}.svc:8000"
+              value: "http://{{ include "meetings.name" $root }}-backend.{{ $root.Release.Namespace }}.svc:8000"
             - name: SANDBOX_CAPABILITY_FILE
               value: /etc/sandbox/capabilities
             - name: INFERENCE_API_KEY_FILE
               value: /etc/sandbox/secrets/inference-api-key
+            - name: METRICS_DSN_FILE
+              value: /etc/sandbox/secrets/metrics-dsn
+            - name: SANDBOX_EXEC_NAMESPACE
+              value: {{ $root.Values.sandbox.execNamespace }}
+            - name: MEETINGS_PROFILE
+              value: {{ $profile.name }}
           volumeMounts:
             - name: capabilities
               mountPath: /etc/sandbox
               readOnly: true
-            # Optional: absent for endpoints that need no authentication.
-            - name: inference-key
+            - name: secrets
               mountPath: /etc/sandbox/secrets
               readOnly: true
             - name: tmp
@@ -165,33 +203,50 @@ spec:
           readinessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 5
-          resources: {{- toYaml .Values.sandbox.profiles.baseline.resources | nindent 12 }}
+          resources: {{- toYaml $root.Values.sandbox.resources | nindent 12 }}
       volumes:
         - name: capabilities
           configMap:
-            name: persona-baseline-capabilities
+            name: {{ $sa }}-capabilities
             items:
               - key: capabilities
                 path: capabilities
-        - name: inference-key
-          secret:
-            secretName: {{ .Values.inference.existingSecret }}
-            optional: true
-            items:
-              - key: {{ .Values.inference.apiKeyKey }}
-                path: inference-api-key
+        {{/*
+        Projected so a profile mounts only the credentials it needs. A baseline
+        sandbox has no metrics DSN on disk at all -- there is nothing there to
+        steal, quite apart from having no route to use it.
+        */}}
+        - name: secrets
+          projected:
+            sources:
+              - secret:
+                  name: {{ $root.Values.inference.existingSecret }}
+                  optional: true
+                  items:
+                    - key: {{ $root.Values.inference.apiKeyKey }}
+                      path: inference-api-key
+              {{- if $profile.needsMetricsDsn }}
+              - secret:
+                  name: {{ $root.Values.sandbox.metricsSecret }}
+                  optional: true
+                  items:
+                    - key: dsn
+                      path: metrics-dsn
+              {{- end }}
         - name: tmp
           emptyDir: {}
+{{- if gt (int $profile.warmReplicas) 0 }}
 ---
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
 metadata:
-  name: persona-baseline
-  namespace: {{ .Values.sandbox.namespace }}
-  labels: {{- include "meetings.labels" . | nindent 4 }}
+  name: {{ $sa }}
+  namespace: {{ $root.Values.sandbox.namespace }}
+  labels: {{- include "meetings.labels" $root | nindent 4 }}
 spec:
-  # Pre-warmed so no turn ever pays a cold gVisor pod start, which is seconds
-  # rather than the few hundred milliseconds a warm claim costs.
-  replicas: {{ .Values.sandbox.profiles.baseline.warmReplicas }}
+  # Pre-warmed so no turn pays a cold gVisor pod start.
+  replicas: {{ $profile.warmReplicas }}
   sandboxTemplateRef:
-    name: persona-baseline
+    name: {{ $sa }}
+{{- end }}
+{{- end }}

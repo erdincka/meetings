@@ -1,0 +1,56 @@
+# GATE 3: proves NetworkPolicy is actually ENFORCED, not merely accepted.
+#
+# Every CNI accepts NetworkPolicy objects. Not every CNI enforces them --
+# kind's default kindnetd applies them cleanly and ignores them entirely. That
+# failure mode is invisible: `kubectl get networkpolicy` looks correct, the
+# rules read correctly, and nothing is blocked.
+#
+# This project's whole argument is that the cluster enforces what a persona may
+# reach, so an unenforced policy layer is a fake security story of exactly the
+# kind the gVisor gate exists to prevent. Assert the deny, not the object.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netpol-smoke
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netpol-target
+  namespace: netpol-smoke
+  labels: {role: target}
+spec:
+  restartPolicy: Never
+  # Hardened like everything else this project deploys. A gate that models bad
+  # practice teaches bad practice, and the security scan rightly failed on it.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: server
+      image: python:3.13-slim
+      command: ["python3", "-m", "http.server", "8080"]
+      ports: [{containerPort: 8080}]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 20m, memory: 48Mi}
+        limits:   {cpu: 300m, memory: 192Mi}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress-to-target
+  namespace: netpol-smoke
+spec:
+  podSelector:
+    matchLabels: {role: target}
+  policyTypes: [Ingress]
+  # No ingress rules at all: nothing may reach this pod.
+  ingress: []

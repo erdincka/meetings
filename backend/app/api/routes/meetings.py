@@ -12,6 +12,8 @@ from app.domain.meetings import MeetingCreate, MeetingDocumentLink, MeetingRespo
 from app.domain.response import APIResponse
 from app.models.documents import Document, DocumentChunk
 from app.models.meetings import Meeting, MeetingTemplate
+from app.models.roles import RoleAgent
+from app.orchestration import profiles
 from app.services.meeting_executor import run_meeting_execution
 
 logger = structlog.get_logger(__name__)
@@ -118,6 +120,53 @@ async def get_meeting(
         raise HTTPException(status_code=404, detail="Meeting not found")
 
     return APIResponse(status="success", data=MeetingResponse.model_validate(meeting).model_dump())
+
+
+@router.get("/{meeting_id}/capabilities", response_model=APIResponse)
+async def get_meeting_capabilities(
+    meeting_id: UUID, session: AsyncSession = Depends(database.get_db_session)
+) -> APIResponse:
+    """What each attendee was granted, and what the cluster will enforce.
+
+    The audit matrix in the UI is built from this plus the tool_audit entries in
+    the event log. Granting is only half the picture: a persona may hold a tool
+    in its profile and still be refused at call time, and showing both is what
+    turns least privilege from an assertion into something you can look at.
+    """
+    meeting = await session.scalar(select(Meeting).where(Meeting.id == meeting_id))
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    attendee_ids = [UUID(str(a)) for a in (meeting.selected_attendee_ids or [])]
+    roles = (
+        (await session.execute(select(RoleAgent).where(RoleAgent.id.in_(attendee_ids))))
+        .scalars()
+        .all()
+    )
+
+    entries = []
+    for role in roles:
+        profile = profiles.resolve(list(role.default_tools or []))
+        entries.append(
+            {
+                "agent_id": str(role.id),
+                "display_name": role.display_name,
+                "title": role.title,
+                "profile": profile.name,
+                "profile_description": profile.description,
+                "granted_tools": sorted(profile.tools),
+                "can_execute_code": profile.can_execute_code,
+                "holds_metrics_credential": profile.needs_metrics_dsn,
+            }
+        )
+
+    return APIResponse(
+        status="success",
+        data={
+            "attendees": sorted(entries, key=lambda e: e["display_name"]),
+            "all_tools": sorted(profiles.ALL_TOOLS),
+        },
+    )
 
 
 @router.delete("/{meeting_id}", response_model=APIResponse)

@@ -9,11 +9,11 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
+from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
-from sqlalchemy import pool
 
+from alembic import context
 from app.core.config import settings
 from app.core.database import _ensure_models_registered
 
@@ -34,12 +34,34 @@ def _url() -> str:
     return settings.DATABASE_URL
 
 
+def _include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
+    """Restrict autogenerate to the schema this application owns.
+
+    include_schemas=True is needed so the app schema is compared at all, but it
+    also sweeps in everything else in the database -- including the tables
+    LangGraph's Postgres checkpointer creates in `public`. Autogenerate saw
+    those as objects missing from the model and proposed *dropping* them, which
+    would have silently destroyed meeting durability the next time someone ran
+    a migration.
+
+    Anything outside DB_SCHEMA belongs to someone else. Leave it alone.
+    """
+    schema = getattr(obj, "schema", None)
+    if type_ == "table":
+        return schema == DB_SCHEMA
+    if type_ == "index":
+        parent = getattr(obj, "table", None)
+        return getattr(parent, "schema", None) == DB_SCHEMA
+    return True
+
+
 def _configure(connection: Connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
         version_table_schema=DB_SCHEMA,
         include_schemas=True,
+        include_object=_include_object,
         compare_type=True,
     )
 
@@ -51,6 +73,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         version_table_schema=DB_SCHEMA,
         include_schemas=True,
+        include_object=_include_object,
         dialect_opts={"paramstyle": "named"},
     )
     with context.begin_transaction():

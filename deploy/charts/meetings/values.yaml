@@ -80,6 +80,16 @@ sandbox:
   namespace: meetings-sandboxes
   execNamespace: meetings-exec
   runtimeImage: meetings-persona-runtime:latest
+  execImage: meetings-exec-python:latest
+  # Read-only DSN for the metrics schema, mounted only by profiles granted it.
+  metricsSecret: meetings-metrics-ro
+  execWarmReplicas: 1
+  execResources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: "2",  memory: 1Gi}
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: "1",  memory: 768Mi}
 
   # One image, many profiles. What each profile may do is set by its
   # SandboxTemplate -- capability file, ServiceAccount, NetworkPolicy, Secrets --
@@ -100,3 +110,95 @@ gateway:
 
 logLevel: INFO
 allowVolatileCheckpoints: false
+
+# GENERATED FILE -- do not edit.
+#
+# Source: backend/app/orchestration/profiles.py
+# Regenerate: scripts/generate-profile-values.sh
+#
+# Each entry becomes a ServiceAccount, a capability ConfigMap, a SandboxTemplate
+# with its own NetworkPolicy, and (where warmReplicas > 0) a SandboxWarmPool.
+# `canExecuteCode` is the one that matters most: it decides whether the profile's
+# ServiceAccount is bound to the exec-sandbox-claimer Role, and therefore whether
+# the apiserver will let its sandboxes claim a code-execution sandbox at all.
+profiles:
+
+  - name: baseline
+    description: 'Reads the shared library, drafts artifacts, records actions.'
+    canExecuteCode: false
+    needsMetricsDsn: false
+    needsCorpusEgress: false
+    warmReplicas: 2
+    tools:
+      - draft_artifact
+      - read_artifact
+      - record_action_item
+      - retrieve_documents
+
+  - name: counsel
+    description: 'Baseline plus deterministic policy checks.'
+    canExecuteCode: false
+    needsMetricsDsn: false
+    needsCorpusEgress: false
+    warmReplicas: 1
+    tools:
+      - check_policy_compliance
+      - draft_artifact
+      - read_artifact
+      - record_action_item
+      - retrieve_documents
+
+  - name: strategist
+    description: 'Baseline plus the external corpus.'
+    canExecuteCode: false
+    needsMetricsDsn: false
+    needsCorpusEgress: true
+    warmReplicas: 0
+    tools:
+      - draft_artifact
+      - read_artifact
+      - record_action_item
+      - retrieve_documents
+      - search_corpus
+
+  - name: analyst
+    description: 'Baseline plus read-only business metrics. Cannot execute code.'
+    canExecuteCode: false
+    needsMetricsDsn: true
+    needsCorpusEgress: false
+    warmReplicas: 1
+    tools:
+      - draft_artifact
+      - query_business_metrics
+      - read_artifact
+      - record_action_item
+      - retrieve_documents
+
+  - name: quant
+    description: 'Metrics plus model-authored analysis, executed in a network-isolated sandbox.'
+    canExecuteCode: true
+    needsMetricsDsn: true
+    needsCorpusEgress: false
+    warmReplicas: 1
+    tools:
+      - draft_artifact
+      - query_business_metrics
+      - read_artifact
+      - record_action_item
+      - retrieve_documents
+      - run_python_analysis
+
+  - name: chief
+    description: 'Broad read access across metrics, policy and corpus. No code execution.'
+    canExecuteCode: false
+    needsMetricsDsn: true
+    needsCorpusEgress: true
+    warmReplicas: 1
+    tools:
+      - check_policy_compliance
+      - draft_artifact
+      - query_business_metrics
+      - read_artifact
+      - record_action_item
+      - retrieve_documents
+      - search_corpus

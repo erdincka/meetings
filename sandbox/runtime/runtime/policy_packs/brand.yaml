@@ -1,0 +1,17 @@
+# House style for anything that may be read outside the company.
+rules:
+  - id: BRAND-001
+    severity: low
+    pattern: '\b(guarantee|guaranteed|risk[- ]free|100% safe|never fails)\b'
+    message: An absolute claim is made.
+    remediation: Soften to a qualified statement; absolutes invite challenge.
+  - id: BRAND-002
+    severity: medium
+    pattern: '\b(cover[- ]?up|hide|bury|downplay)\b'
+    message: Language suggesting concealment appears in a document that may be disclosed.
+    remediation: Rewrite plainly. Assume this text will be read by a regulator.
+  - id: BRAND-003
+    severity: low
+    pattern: '\b(cheap|inferior|failure|disaster)\b'
+    message: Language that reads badly if quoted out of context.
+    remediation: Prefer specific, factual description over judgement.

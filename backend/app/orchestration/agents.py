@@ -23,6 +23,7 @@ import structlog
 from langchain_core.runnables import RunnableConfig
 
 from app.core.config import settings
+from app.orchestration import profiles
 from app.orchestration.prompts import DEFAULT_AGENT_PROMPT
 from app.orchestration.protocol import (
     Attendee,
@@ -93,12 +94,18 @@ def create_role_agent_node(
         if cached is not None:
             return cached
 
+        # The persona's requested tools decide which profile it runs as, and the
+        # profile decides which SandboxTemplate, ServiceAccount and
+        # NetworkPolicy its sandbox is built from. Drift is caught at meeting
+        # start (see graph construction), so by here it is safe to resolve.
+        profile = profiles.resolve(list(role.default_tools or []))
+
         try:
             handle = await manager.acquire(
                 meeting_id=meeting_id,
                 agent_id=agent_id,
-                profile=configurable.get("profile", "baseline"),
-                warm_pool=configurable.get("warm_pool", "persona-baseline"),
+                profile=profile.name,
+                warm_pool=f"persona-{profile.name}",
             )
         except SandboxUnavailableError as exc:
             return _failure_state(agent_id, role, f"No sandbox available: {exc}")
@@ -113,7 +120,11 @@ def create_role_agent_node(
                 or role.system_prompt
                 or DEFAULT_AGENT_PROMPT
             ),
-            granted_tools=list(role.default_tools or ["retrieve_documents"]),
+            # Grant the profile's full tool set rather than only what the
+            # persona asked for: resolution already picked the smallest profile
+            # that covers the request, and the runtime intersects this with its
+            # own capability file regardless.
+            granted_tools=sorted(profile.tools),
             model=ModelConfig(
                 timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
                 endpoint=settings_obj.inference_endpoint or "",

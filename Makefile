@@ -2,16 +2,21 @@
 # Every target is idempotent and safe to re-run.
 
 SHELL          := /bin/bash
+# Rancher Desktop and Homebrew shims are not on PATH in a non-login shell, so a
+# recipe would silently fall back to "command not found" -- which chart-validate
+# then reported as a clean run over zero resources.
+export PATH := $(HOME)/.rd/bin:/opt/homebrew/bin:$(PATH)
 CLUSTER        ?= meetings
 KCTX           ?= kind-$(CLUSTER)
 KUBECTL        ?= kubectl --context $(KCTX)
 HELM           ?= helm --kube-context $(KCTX)
 NODE_IMAGE     ?= kindest-node-runsc:v1.36.1
 AGENT_SANDBOX_VER ?= v0.5.6
+CALICO_VER     ?= v3.31.1
 
 .DEFAULT_GOAL := help
 .PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox \
-        smoke-pgvector deploy images lint test check security migrate seed status
+        smoke-pgvector smoke-netpol deploy images lint test check security migrate seed demo status
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -30,6 +35,10 @@ kind-down: ## Delete the local cluster
 	kind delete cluster --name $(CLUSTER)
 
 bootstrap: ## Install platform prerequisites (idempotent)
+	# Calico, because kindnetd does not implement NetworkPolicy -- policies
+	# apply cleanly and are never enforced. Gate 3 proves the difference.
+	$(KUBECTL) apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/$(CALICO_VER)/manifests/calico.yaml
+	$(KUBECTL) -n kube-system rollout status daemonset/calico-node --timeout=8m
 	$(HELM) repo add jetstack https://charts.jetstack.io --force-update
 	$(HELM) repo add cnpg https://cloudnative-pg.github.io/charts --force-update
 	$(HELM) upgrade --install cert-manager jetstack/cert-manager \
@@ -46,15 +55,15 @@ bootstrap: ## Install platform prerequisites (idempotent)
 	$(KUBECTL) apply --server-side \
 	  -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX_VER)/sandbox-with-extensions.yaml
 	$(KUBECTL) -n agent-sandbox-system rollout status deploy/agent-sandbox-controller --timeout=5m
+	# Only the release namespace: Helm needs it before it can store a release.
+	# The sandbox namespaces are owned by the chart, which also labels them for
+	# restricted Pod Security -- creating them here as well makes the chart fail
+	# to adopt them.
 	$(KUBECTL) create namespace meetings --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) create namespace meetings-sandboxes --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) create namespace meetings-exec --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) label namespace meetings-sandboxes meetings-exec \
-	  pod-security.kubernetes.io/enforce=restricted --overwrite
 	$(KUBECTL) apply -f deploy/bootstrap/cnpg-cluster.yaml
 	$(KUBECTL) -n meetings wait --for=condition=Ready cluster/meetings-postgres --timeout=8m
 
-smoke: smoke-gvisor smoke-sandbox ## Run both fail-fast gates
+smoke: smoke-gvisor smoke-netpol smoke-sandbox ## Run every fail-fast gate
 
 smoke-gvisor: ## GATE 1: assert sandboxes really run under gVisor, not runc
 	@echo ">> gate 1: gVisor runtime"
@@ -64,6 +73,10 @@ smoke-gvisor: ## GATE 1: assert sandboxes really run under gVisor, not runc
 	  || { echo "FAIL: gVisor gate"; $(KUBECTL) logs job/gvisor-smoke; exit 1; }
 	@$(KUBECTL) logs job/gvisor-smoke
 	@$(KUBECTL) delete job gvisor-smoke --ignore-not-found >/dev/null
+
+smoke-netpol: ## GATE 3: assert NetworkPolicy is enforced, not merely accepted
+	@echo ">> gate 3: NetworkPolicy enforcement"
+	@bash deploy/bootstrap/smoke-netpol.sh $(KCTX)
 
 smoke-sandbox: ## GATE 2: assert the Agent Sandbox control plane works end to end
 	@echo ">> gate 2: Agent Sandbox round trip"
@@ -86,12 +99,24 @@ images: ## Build app images and load them into the kind cluster
 	docker build --target runtime -t meetings-backend:latest backend
 	docker build --target runtime -t meetings-frontend:latest frontend
 	docker build --target runtime -t meetings-persona-runtime:latest sandbox/runtime
+	docker build -t meetings-exec-python:latest sandbox/exec-python
 	kind load docker-image meetings-backend:latest meetings-frontend:latest \
-	  meetings-persona-runtime:latest --name $(CLUSTER)
+	  meetings-persona-runtime:latest meetings-exec-python:latest --name $(CLUSTER)
 
 deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	$(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
 	  -f deploy/charts/meetings/values-local.yaml --wait --timeout 6m
+
+demo: ## Run the least-privilege demo meeting to completion (in-cluster)
+	@python3 -c "from pathlib import Path; \
+	  s=Path('deploy/demo/run-demo.py').read_text(); \
+	  i='\n'.join('    '+l if l.strip() else '' for l in s.splitlines()); \
+	  t=Path('deploy/demo/demo-job.yaml').read_text(); \
+	  Path('deploy/demo/demo-job.rendered.yaml').write_text(t.replace('{{SCRIPT}}', i))"
+	$(KUBECTL) delete job meetings-demo -n meetings --ignore-not-found
+	$(KUBECTL) apply -f deploy/demo/demo-job.rendered.yaml
+	$(KUBECTL) -n meetings wait --for=condition=Ready pod -l job-name=meetings-demo --timeout=120s
+	$(KUBECTL) -n meetings logs -f job/meetings-demo
 
 seed: ## Load reference personas, documents and templates
 	$(KUBECTL) -n meetings exec deploy/meetings-backend -- \
@@ -108,6 +133,7 @@ lint: ## ruff + format + mypy + eslint + tsc + helm/kubeconform
 	cd frontend && npm run lint
 	cd frontend && npx tsc --noEmit
 	bash sandbox/runtime/sync-shared.sh && git diff --exit-code sandbox/runtime/runtime/protocol.py sandbox/runtime/runtime/recovery.py
+	bash scripts/generate-profile-values.sh && git diff --exit-code deploy/charts/meetings/values.yaml
 	$(MAKE) chart-validate
 
 test: ## Backend + sandbox runtime tests with coverage
@@ -115,7 +141,9 @@ test: ## Backend + sandbox runtime tests with coverage
 	cd sandbox/runtime && uv run pytest tests -v
 
 chart-validate: ## Render every values profile and validate against API schemas
-	@for f in values.yaml values-local.yaml; do \
+	@command -v helm >/dev/null || { echo "helm not found on PATH"; exit 1; }
+	@command -v kubeconform >/dev/null || { echo "kubeconform not found on PATH"; exit 1; }
+	@set -e; for f in values.yaml values-local.yaml; do \
 	  echo ">> $$f"; \
 	  helm template meetings deploy/charts/meetings -n meetings \
 	    -f deploy/charts/meetings/$$f \

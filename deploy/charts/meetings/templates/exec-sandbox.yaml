@@ -1,0 +1,156 @@
+{{/*
+Tier B: the code-execution sandbox, and the RBAC that gates it.
+
+This file contains the single most demonstrable control in the project.
+
+Claiming an exec sandbox is a Kubernetes API call. The Role below permits it;
+the RoleBinding is granted *only* to profiles whose canExecuteCode is true. A
+persona in any other profile that tries to run code gets a 403 from the
+apiserver -- not a refusal from application code, not a prompt that declines.
+
+The contrast to look at: `chief` has the broadest tool set of any profile and is
+deliberately absent from this binding. Capability follows the job, not the rank.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: exec-python
+  namespace: {{ .Values.sandbox.execNamespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: exec-sandbox-claimer
+  namespace: {{ .Values.sandbox.execNamespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: exec-sandbox-claimer
+  namespace: {{ .Values.sandbox.execNamespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+  annotations:
+    meetings/rationale: >-
+      Bound only to profiles that may execute code. Every other persona is
+      refused by the apiserver, which is the enforcing control -- not the prompt.
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: exec-sandbox-claimer
+subjects:
+  {{- range $profile := .Values.profiles }}
+  {{- if $profile.canExecuteCode }}
+  - kind: ServiceAccount
+    name: persona-{{ $profile.name }}
+    namespace: {{ $.Values.sandbox.namespace }}
+  {{- end }}
+  {{- end }}
+  # The backend claims persona sandboxes on the meeting's behalf; it does not
+  # execute code, but it does reap orphaned exec sandboxes on startup.
+  - kind: ServiceAccount
+    name: {{ include "meetings.name" . }}-backend
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: exec-python
+  namespace: {{ .Values.sandbox.execNamespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  service: false
+  {{/*
+  No egress rules at all, and no ingress beyond the controller. Model-authored
+  code runs here; it must not be able to reach the database, the backend, the
+  inference endpoint, the apiserver or the internet, whatever it decides to try.
+  */}}
+  networkPolicy:
+    ingress:
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: agent-sandbox-system
+      # A persona sandbox has to be able to deliver the job and collect the
+      # output, which the SDK does over HTTP to the sandbox itself. Denying this
+      # blocks the caller, not the code: the security property that matters is
+      # that the *executed code* reaches nothing, and that is egress, below.
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ .Values.sandbox.namespace }}
+        ports:
+          - {protocol: TCP, port: 8080}
+    # Deliberately empty. Model-authored code reaches nothing: not the database,
+    # not the backend, not the inference endpoint, not the apiserver, not the
+    # internet -- whatever it decides to try.
+    egress: []
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "meetings.name" . }}
+        app.kubernetes.io/component: exec-sandbox
+    spec:
+      serviceAccountName: exec-python
+      runtimeClassName: {{ .Values.sandbox.runtimeClassName }}
+      # Nothing in this tier calls Kubernetes, so it gets no token to do it with.
+      automountServiceAccountToken: false
+      nodeSelector:
+        node-role: sandbox
+      tolerations:
+        - key: node-role
+          operator: Equal
+          value: sandbox
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: exec
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 5
+          image: {{ include "meetings.image" (dict "registry" .Values.image.registry "image" .Values.sandbox.execImage) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+          resources: {{- toYaml .Values.sandbox.execResources | nindent 12 }}
+      volumes:
+        # The only writable path. Discarded with the sandbox, so nothing an
+        # analysis produces outlives the turn unless it was saved as an artifact.
+        - name: work
+          emptyDir: {}
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: exec-python
+  namespace: {{ .Values.sandbox.execNamespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.sandbox.execWarmReplicas }}
+  sandboxTemplateRef:
+    name: exec-python

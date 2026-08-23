@@ -65,12 +65,12 @@ jobs:
       - name: mypy
         run: uv run mypy app
 
-      # The floor locks in current coverage so it cannot regress. Phase 2's
-      # fake-sandbox harness lifted it from 8% to 21% by exercising the agent
-      # node, RPC client and state reducers together. The remaining gap is
-      # mostly route and executor code that needs a live database.
+      # The floor locks in current coverage so it cannot regress. Phase 3's
+      # profile, tool-registry and denial tests lifted it from 21% to 50%. The
+      # remaining gap is mostly route and executor code that needs a live
+      # database and a live cluster.
       - name: pytest
-        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing --cov-fail-under=20
+        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing --cov-fail-under=48
 
       - name: alembic upgrade
         run: uv run alembic upgrade head
@@ -79,6 +79,16 @@ jobs:
       # that surfaced when the models moved to typed declarative.
       - name: alembic drift check
         run: uv run alembic check
+
+      # The chart's profile values are generated from
+      # app/orchestration/profiles.py. If they drift, the tools the runtime
+      # registers and the Kubernetes objects that enforce them stop agreeing --
+      # which is precisely the failure this project exists to make impossible.
+      - name: profile values are in sync
+        working-directory: .
+        run: |
+          bash scripts/generate-profile-values.sh
+          git diff --exit-code deploy/charts/meetings/values.yaml
 
   sandbox-runtime:
     name: sandbox runtime (lint, types, tests)

@@ -31,7 +31,8 @@ from .protocol import (
     TurnResult,
 )
 from .recovery import as_text, split_thought, strip_speaker_prefix
-from .tools import TOOL_BUILDERS
+from .tools import build_tools
+from .tools.code_exec import DENIED_PREFIX
 
 logger = structlog.get_logger(__name__)
 
@@ -62,22 +63,30 @@ class BoundPersona:
         self.llm = ChatOpenAI(**llm_kwargs)  # type: ignore[arg-type]
 
     def _build_tools(self) -> list[BaseTool]:
-        tools: list[BaseTool] = []
-        for name in self.active_tools:
-            builder = TOOL_BUILDERS.get(name)
-            if builder is None:
-                logger.warning("no_builder_for_granted_tool", tool=name)
-                continue
-            tools.append(
-                builder(
-                    client=self.backend,
-                    agent_id=self.bind.agent_id,
-                    meeting_id=self.bind.meeting_id,
-                    library_access=self.bind.persona.allowed_shared_library_access,
-                    limit=self.bind.limits.retrieval_limit,
-                )
-            )
-        return tools
+        return build_tools(
+            self.active_tools,
+            client=self.backend,
+            agent_id=self.bind.agent_id,
+            meeting_id=self.bind.meeting_id,
+            library_access=self.bind.persona.allowed_shared_library_access,
+            limit=self.bind.limits.retrieval_limit,
+            artifact_writer=self._write_artifact,
+        )
+
+    async def _write_artifact(self, *, kind: str, title: str, body: str, mime_type: str) -> str:
+        """Persist an artifact produced by a tool, returning its id."""
+        response = await self.backend.post(
+            "/internal/v1/artifacts",
+            json={
+                "meeting_id": self.bind.meeting_id,
+                "kind": kind,
+                "title": title,
+                "body": body,
+                "mime_type": mime_type,
+            },
+        )
+        response.raise_for_status()
+        return str(response.json().get("data", {}).get("id", ""))
 
     async def run_turn(self, request: TurnRequest) -> AsyncIterator[TurnEvent]:
         """Execute one turn, streaming progress and ending with turn.result."""
@@ -134,11 +143,18 @@ class BoundPersona:
                     yield TurnEvent(type="tool.call", tool_call=tc)
             elif isinstance(message, ToolMessage):
                 body = as_text(message.content)
+                # A cluster denial is not a tool failure: it is a policy
+                # decision, and the audit matrix has to tell them apart. An
+                # outage shown as a denial would misrepresent the security
+                # model; a denial shown as an outage would hide it.
+                denied = body.startswith(DENIED_PREFIX)
                 tr = ToolResult(
                     id=str(message.tool_call_id or uuid.uuid4()),
                     name=message.name or "unknown",
-                    ok=not body.lower().startswith(("error", "retrieval is unavailable")),
+                    ok=not denied
+                    and not body.lower().startswith(("error", "retrieval is unavailable")),
                     summary=body[:500],
+                    denied_reason=body[len(DENIED_PREFIX) :].lstrip(": ") if denied else None,
                 )
                 tool_results.append(tr)
                 yield TurnEvent(type="tool.result", tool_result=tr)

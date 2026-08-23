@@ -5,6 +5,15 @@ name: meetings
 # Replicated from the k3s cluster this replaces, where all three were verified
 # enabled. ImageVolume is what lets CloudNativePG mount pgvector declaratively;
 # UserNamespacesSupport backs the `crun` fallback tier if gVisor is unavailable.
+networking:
+  # kindnetd, kind's default CNI, does not implement NetworkPolicy at all --
+  # policies apply cleanly and are simply never enforced. For a project whose
+  # argument is that Kubernetes enforces the boundaries, an inert enforcement
+  # layer is worse than no claim at all, so the default CNI is disabled and
+  # Calico is installed by the bootstrap.
+  disableDefaultCNI: true
+  podSubnet: "10.244.0.0/16"
+
 featureGates:
   ImageVolume: true
   UserNamespacesSupport: true
