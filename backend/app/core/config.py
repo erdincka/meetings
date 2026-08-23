@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL_NAME: str | None = None
     EMBEDDING_IGNORE_TLS: bool = False
 
+    # Per-request LLM timeout, seconds. The default suits a hosted endpoint;
+    # CPU-only local inference (the Ollama profile) needs considerably more,
+    # since a small model generating structured output on a few cores can take
+    # minutes rather than seconds.
+    LLM_TIMEOUT_SECONDS: int = 90
+
     # Vector width must match the embedding model. Changing it once chunks
     # exist is guarded by an Alembic migration.
     EMBEDDING_DIM: int = 2048

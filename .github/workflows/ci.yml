@@ -137,7 +137,7 @@ jobs:
       # including the Gateway API CRDs.
       - name: kubeconform
         run: |
-          for f in values.yaml values-local.yaml values-ollama.yaml; do
+          for f in values.yaml values-local.yaml; do
             echo "::group::$f"
             helm template meetings deploy/charts/meetings -n meetings \
               -f "deploy/charts/meetings/$f" \

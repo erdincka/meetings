@@ -21,9 +21,16 @@ from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
-MEETING_LABEL = "meetings.io/meeting-id"
-AGENT_LABEL = "meetings.io/agent-id"
-PROFILE_LABEL = "meetings.io/profile"
+# The Agent Sandbox controller validates labels injected through a
+# SandboxClaim's additionalPodMetadata: they must carry a domain prefix, and the
+# domain must be one it allows. An arbitrary domain ("meetings.io") is rejected
+# because a label domain can opt a pod into policy the claimer did not intend;
+# an unprefixed key is rejected for the same reason. `sandbox.users.io` is the
+# designated domain for user-supplied labels.
+LABEL_DOMAIN = "sandbox.users.io"
+MEETING_LABEL = f"{LABEL_DOMAIN}/meeting-id"
+AGENT_LABEL = f"{LABEL_DOMAIN}/agent-id"
+PROFILE_LABEL = f"{LABEL_DOMAIN}/profile"
 
 
 @dataclass(frozen=True)

@@ -50,6 +50,12 @@ class BoundPersona:
             "model": bind.model.model_name,
             "temperature": bind.model.temperature,
             "timeout": bind.model.timeout_seconds,
+            # Bounded so a rambling model cannot stall a turn or run past the
+            # context window; some providers return 500 rather than truncating.
+            "max_tokens": bind.model.max_tokens,
+            # The transport's own 5xx retries would multiply the turn timeout
+            # invisibly. Failures surface as turn.error instead.
+            "max_retries": 0,
         }
         if bind.model.ignore_tls:
             llm_kwargs["http_async_client"] = httpx.AsyncClient(verify=False, timeout=60)
@@ -88,12 +94,21 @@ class BoundPersona:
             attendee_list=render_attendee_list(request.attendees, self.bind.agent_id),
         )
 
-        history = [
-            HumanMessage(content=f"[{u.display_name} - {u.title}] {u.content}")
-            for u in request.transcript
-        ]
-        if request.directive:
-            history.append(HumanMessage(content=f"[Chair] {request.directive}"))
+        history = [HumanMessage(content=u.content) for u in request.transcript]
+
+        # Always close with an explicit instruction to speak.
+        #
+        # Without it the first speaker receives a system prompt and nothing
+        # else, and models reliably respond by asking for the context they were
+        # already given rather than opening the meeting. The chair's reasoning
+        # is included when the supervisor supplied one.
+        cue = request.directive or (
+            "It is your turn to speak. Contribute to the meeting now, in "
+            "character, addressing the objective and agenda directly. Do not "
+            "ask for context; everything you need is above. Do not restate "
+            "your role."
+        )
+        history.append(HumanMessage(content=f"[Chair] {cue}"))
 
         agent = create_react_agent(self.llm, self._build_tools(), prompt=system_prompt)
 

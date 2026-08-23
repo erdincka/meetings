@@ -41,7 +41,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret }}
                   key: {{ .Values.database.urlKey }}
-            {{- if ne .Values.inference.mode "ollama" }}
+            # Optional: local providers need no authentication.
             - name: INFERENCE_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -54,7 +54,6 @@ spec:
                   name: {{ .Values.inference.existingSecret }}
                   key: {{ .Values.inference.embeddingApiKeyKey }}
                   optional: true
-            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "meetings.name" . }}-config

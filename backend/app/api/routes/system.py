@@ -55,14 +55,38 @@ async def _verify_endpoint(
             else:
                 models = data
 
-            names = [m if isinstance(m, str) else m.get("id") for m in models]
-            if model_name in names:
+            names = [str(m if isinstance(m, str) else m.get("id", "")) for m in models]
+            if _model_is_served(model_name, names):
                 return True, "Verified"
-            preview = ", ".join(str(n) for n in names[:3])
+            preview = ", ".join(names[:3])
             return False, f"Model '{model_name}' not served. Available: {preview}"
     except Exception as exc:
         logger.warning("endpoint_verification_failed", error=str(exc), url=url)
         return False, f"Connection failed: {str(exc)[:60]}"
+
+
+def _model_is_served(wanted: str, available: list[str]) -> bool:
+    """Match a model name against what an endpoint advertises.
+
+    Registries differ on tags: Ollama reports "nomic-embed-text:latest" for what
+    the user configured as "nomic-embed-text", and an exact comparison rejects a
+    model that is plainly present. Compare on the untagged name when either side
+    omits a tag.
+    """
+    if wanted in available:
+        return True
+
+    def base(name: str) -> str:
+        return name.split(":", 1)[0]
+
+    wanted_has_tag = ":" in wanted
+    for name in available:
+        if wanted_has_tag or ":" in name:
+            if base(name) == base(wanted) and not (wanted_has_tag and ":" in name):
+                return True
+        if base(name) == base(wanted):
+            return True
+    return False
 
 
 @router.get("/status", response_model=APIResponse)

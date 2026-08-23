@@ -22,6 +22,7 @@ from typing import Any
 import structlog
 from langchain_core.runnables import RunnableConfig
 
+from app.core.config import settings
 from app.orchestration.prompts import DEFAULT_AGENT_PROMPT
 from app.orchestration.protocol import (
     Attendee,
@@ -35,6 +36,7 @@ from app.orchestration.protocol import (
 from app.orchestration.state import MeetingState, make_utterance, public_transcript
 from app.sandbox.client import PersonaSandboxClient
 from app.sandbox.manager import SandboxUnavailableError, manager
+from app.services import turn_cache
 
 logger = structlog.get_logger(__name__)
 
@@ -85,6 +87,12 @@ def create_role_agent_node(
         # twice.
         turn_key = f"{meeting_id}:{turn_no}:{agent_id}"
 
+        # Durable replay guard. The sandbox keeps an in-memory copy too, but
+        # that dies with the sandbox; this survives a backend restart.
+        cached = await turn_cache.lookup(turn_key)
+        if cached is not None:
+            return cached
+
         try:
             handle = await manager.acquire(
                 meeting_id=meeting_id,
@@ -107,6 +115,7 @@ def create_role_agent_node(
             ),
             granted_tools=list(role.default_tools or ["retrieve_documents"]),
             model=ModelConfig(
+                timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
                 endpoint=settings_obj.inference_endpoint or "",
                 model_name=settings_obj.inference_model_name or "",
                 temperature=settings_obj.inference_temperature,
@@ -138,10 +147,14 @@ def create_role_agent_node(
                     speaker_id=str(m.additional_kwargs.get("agent_id", "")),
                     display_name="",
                     title="",
+                    # Content already carries a "[Name - Title]" prefix.
                     content=str(m.content),
                 )
                 for m in public_transcript(state.get("messages", []))
             ],
+            # The chair's reasoning for picking this speaker, so the agent knows
+            # why it was called on rather than guessing.
+            directive=str(state.get("next_speaker_reason") or ""),
         )
 
         try:
@@ -151,14 +164,38 @@ def create_role_agent_node(
                     if event.type == "turn.error" and event.error is not None:
                         return _failure_state(agent_id, role, event.error.message)
                     if event.type == "turn.result" and event.result is not None:
-                        return _success_state(agent_id, handle.sandbox_name, event.result)
+                        state_update = _success_state(agent_id, handle.sandbox_name, event.result)
+                        await turn_cache.record(
+                            turn_key, meeting_id, agent_id, _serialisable(state_update)
+                        )
+                        return state_update
         except Exception as exc:
-            logger.error("sandbox_turn_failed", agent_id=agent_id, error=str(exc))
-            return _failure_state(agent_id, role, str(exc))
+            logger.error(
+                "sandbox_turn_failed",
+                agent_id=agent_id,
+                error=f"{type(exc).__name__}: {exc}",
+                exc_info=True,
+            )
+            return _failure_state(agent_id, role, f"{type(exc).__name__}: {exc}")
 
         return _failure_state(agent_id, role, "Sandbox closed the stream without a result")
 
     return agent_node
+
+
+def _serialisable(state_update: dict[str, Any]) -> dict[str, Any]:
+    """A JSON-safe copy of a state update, for the turn store.
+
+    LangChain message objects are not JSON-serialisable, so the utterance is
+    stored as its text and rebuilt on replay.
+    """
+    stored = {k: v for k, v in state_update.items() if k != "messages"}
+    messages = state_update.get("messages") or []
+    stored["_utterances"] = [
+        {"content": str(m.content), "agent_id": m.additional_kwargs.get("agent_id", "")}
+        for m in messages
+    ]
+    return stored
 
 
 def _success_state(agent_id: str, sandbox_name: str, result: Any) -> dict[str, Any]:

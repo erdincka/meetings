@@ -81,3 +81,5 @@ class MeetingState(TypedDict, total=False):
     terminated: bool
     final_summary: str | None
     next_speaker: str | None
+    # Why the chair chose them; passed to the agent as its turn cue.
+    next_speaker_reason: str | None

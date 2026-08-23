@@ -100,32 +100,14 @@ spec:
         ports:
           - protocol: TCP
             port: 8000
-      {{- if eq .Values.inference.mode "ollama" }}
-      # In-cluster inference.
+      # The inference endpoint. NetworkPolicy cannot match DNS names, so this
+      # comes from values as explicit CIDRs -- see inference.egressCIDRs.
+      {{- with .Values.inference.egressCIDRs }}
       - to:
-          - namespaceSelector:
-              matchLabels:
-                kubernetes.io/metadata.name: {{ .Release.Namespace }}
-            podSelector:
-              matchLabels:
-                app.kubernetes.io/name: {{ include "meetings.name" . }}
-                app.kubernetes.io/component: ollama
-        ports:
-          - protocol: TCP
-            port: 11434
-      {{- else }}
-      # External inference endpoint. NetworkPolicy cannot match DNS names, so
-      # this is expressed as "the public internet, minus every private range" --
-      # the sandbox can reach the model provider but cannot pivot to anything
-      # inside the cluster or the surrounding network.
-      - to:
+          {{- range . }}
           - ipBlock:
-              cidr: 0.0.0.0/0
-              except:
-                - 10.0.0.0/8
-                - 172.16.0.0/12
-                - 192.168.0.0/16
-                - 169.254.0.0/16
+              cidr: {{ . | quote }}
+          {{- end }}
       {{- end }}
   podTemplate:
     metadata:
@@ -174,11 +156,10 @@ spec:
             - name: capabilities
               mountPath: /etc/sandbox
               readOnly: true
-            {{- if ne .Values.inference.mode "ollama" }}
+            # Optional: absent for endpoints that need no authentication.
             - name: inference-key
               mountPath: /etc/sandbox/secrets
               readOnly: true
-            {{- end }}
             - name: tmp
               mountPath: /tmp
           readinessProbe:
@@ -192,7 +173,6 @@ spec:
             items:
               - key: capabilities
                 path: capabilities
-        {{- if ne .Values.inference.mode "ollama" }}
         - name: inference-key
           secret:
             secretName: {{ .Values.inference.existingSecret }}
@@ -200,7 +180,6 @@ spec:
             items:
               - key: {{ .Values.inference.apiKeyKey }}
                 path: inference-api-key
-        {{- end }}
         - name: tmp
           emptyDir: {}
 ---

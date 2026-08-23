@@ -34,33 +34,44 @@ database:
   urlKey: uri
 
 inference:
-  # `external` = any OpenAI-compatible endpoint. `ollama` = in-cluster.
-  mode: external
+  # Any OpenAI-compatible endpoint: a hosted provider, a self-hosted vLLM, or
+  # Ollama running on the developer's own machine. There is no in-cluster model
+  # server -- serving a model well is a different problem from orchestrating
+  # agents, and conflating them made the demo compete with its own sandboxes
+  # for CPU.
   endpoint: ""
   modelName: ""
   ignoreTls: false
+
+  # Per-request timeout. Hosted endpoints answer in seconds; a small model on
+  # a developer laptop can take considerably longer, and the variance matters
+  # more than the mean -- a tight timeout turns a slow turn into a failed one.
+  timeoutSeconds: 120
+
   embedding:
     endpoint: ""
     modelName: ""
     ignoreTls: false
-    # Must match the embedding model's output width.
-    dimensions: 2048
-  # Credentials come from a Secret you create out of band. They are never
-  # templated into the chart.
+    # Must match the embedding model's output width. The initial migration
+    # creates the vector column at this size and refuses to change it once
+    # chunks exist.
+    dimensions: 768
+
+  # Credentials, when the endpoint needs them. Both keys are optional: local
+  # providers accept no authentication at all, and the code sends a placeholder
+  # rather than failing to construct a client.
   existingSecret: meetings-runtime
   apiKeyKey: INFERENCE_API_KEY
   embeddingApiKeyKey: EMBEDDING_API_KEY
 
-ollama:
-  enabled: false
-  image: ollama/ollama:latest
-  model: qwen3:4b
-  persistence:
-    enabled: true
-    size: 20Gi
-  resources:
-    requests: {cpu: 500m, memory: 2Gi}
-    limits:   {cpu: "4",  memory: 8Gi}
+  # Sandboxes run under a default-deny egress policy, and NetworkPolicy cannot
+  # match DNS names -- only addresses. List the CIDRs the inference endpoint
+  # resolves to, or sandboxes will fail every turn with a bare connection error
+  # while the backend (which is not sandboxed) works fine.
+  #
+  # For a hosted provider this is usually 0.0.0.0/0 minus the private ranges;
+  # for an endpoint on the developer's own machine it is a single host address.
+  egressCIDRs: []
 
 sandbox:
   # Never hardcode gvisor in a template: hosts without runsc fall back to

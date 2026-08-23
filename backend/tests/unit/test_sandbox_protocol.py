@@ -78,8 +78,21 @@ class TestBindRequest:
         A backend that does not transmit the credential cannot leak it through
         a request log, a trace, or an error report.
         """
+        # Match credential-shaped names precisely. A blanket "token" substring
+        # test would flag max_tokens, which is a generation cap, not a secret.
+        credential_names = {
+            "api_key",
+            "apikey",
+            "key",
+            "secret",
+            "password",
+            "auth_token",
+            "access_token",
+            "bearer",
+            "credential",
+        }
         fields = set(PersonaBindRequest.model_fields) | set(ModelConfig.model_fields)
-        assert not any("key" in f or "secret" in f or "token" in f for f in fields)
+        assert not (fields & credential_names)
 
     def test_every_persona_field_survives_serialisation(self) -> None:
         """Regression guard for the dozen fields that reached no prompt."""
@@ -123,3 +136,36 @@ class TestTurnRequest:
         turn = TurnRequest(turn_key="m:0:a")
         assert turn.objective == "" and turn.agenda == ""
         assert turn.attendees == [] and turn.transcript == []
+
+
+class TestGenerationCaps:
+    """Unbounded generation is a real failure mode, not a theoretical one.
+
+    Observed on Ollama: a small model asked for structured output ran past 320
+    tokens and the server returned 500. The OpenAI client then retried twice,
+    turning a 90s timeout into nearly six minutes of apparent hang.
+    """
+
+    def test_model_config_caps_output_by_default(self) -> None:
+        from app.orchestration.protocol import ModelConfig
+
+        config = ModelConfig(endpoint="http://x/v1", model_name="m")
+        assert config.max_tokens > 0
+
+    def test_cap_is_transmitted(self) -> None:
+        from app.orchestration.protocol import ModelConfig
+
+        restored = ModelConfig.model_validate(
+            json.loads(
+                ModelConfig(
+                    endpoint="http://x/v1", model_name="m", max_tokens=256
+                ).model_dump_json()
+            )
+        )
+        assert restored.max_tokens == 256
+
+    def test_supervisor_cap_is_modest(self) -> None:
+        """A speaker decision is an ID and a sentence, not an essay."""
+        from app.orchestration.supervisor import SUPERVISOR_MAX_TOKENS
+
+        assert 0 < SUPERVISOR_MAX_TOKENS <= 500

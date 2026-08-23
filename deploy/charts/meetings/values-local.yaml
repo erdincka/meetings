@@ -1,4 +1,14 @@
-# Local kind cluster. Images are loaded into the node by Tilt, so never pull.
+# Local kind cluster, with inference served by Ollama on the developer's own
+# machine.
+#
+# Running the model on the host rather than in the cluster is deliberate: the
+# VM has a handful of cores, and an in-cluster model server competes directly
+# with the sandbox warm pools it is meant to be serving. On the host it also
+# gets GPU acceleration, which inside the VM it would not.
+#
+# Start it with:  OLLAMA_HOST=0.0.0.0 ollama serve
+# (the default 127.0.0.1 binding is unreachable from the cluster)
+
 image:
   pullPolicy: Never
 
@@ -10,6 +20,22 @@ frontend:
 gateway:
   host: meetings.localtest.me
 
-# Observability is off by default: on a 12GB VM the RAM is better spent on
-# sandbox warm pools. Phase 5 adds the values file that turns it on.
+inference:
+  # Rancher Desktop's host gateway. Confirm yours with:
+  #   docker exec meetings-control-plane getent hosts host.docker.internal
+  # Pods cannot resolve host.docker.internal -- that name exists on the node,
+  # not in cluster DNS -- so the address is used directly.
+  endpoint: "http://192.168.5.2:11434/v1"
+  modelName: "gemma4:e4b"
+  timeoutSeconds: 300
+  embedding:
+    endpoint: "http://192.168.5.2:11434/v1"
+    modelName: "nomic-embed-text"
+    dimensions: 768
+  # Sandboxes are default-deny egress, and NetworkPolicy matches addresses, not
+  # names. Without this every sandbox turn fails with a bare connection error
+  # while the (unsandboxed) backend works fine.
+  egressCIDRs:
+    - "192.168.5.2/32"
+
 logLevel: DEBUG

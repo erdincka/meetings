@@ -115,7 +115,7 @@ test: ## Backend + sandbox runtime tests with coverage
 	cd sandbox/runtime && uv run pytest tests -v
 
 chart-validate: ## Render every values profile and validate against API schemas
-	@for f in values.yaml values-local.yaml values-ollama.yaml; do \
+	@for f in values.yaml values-local.yaml; do \
 	  echo ">> $$f"; \
 	  helm template meetings deploy/charts/meetings -n meetings \
 	    -f deploy/charts/meetings/$$f \

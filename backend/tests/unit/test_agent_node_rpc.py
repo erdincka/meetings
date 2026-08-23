@@ -238,3 +238,62 @@ class TestTranscriptPassing:
         assert len(turn.transcript) == 1
         assert "Welcome" in turn.transcript[0].content
         assert len(public_transcript(messages)) == 1
+
+
+class TestDurableIdempotency:
+    """A replayed node must not re-invoke the model or re-run tools.
+
+    LangGraph replays the last uncompleted node after a crash-resume. The
+    sandbox's in-memory cache dies with the sandbox, so the backend keeps its
+    own record.
+    """
+
+    async def test_cached_turn_short_circuits_the_sandbox(
+        self, patched_sandbox: FakeSandboxState, monkeypatch
+    ) -> None:
+        from app.services import turn_cache
+
+        stored: dict[str, dict[str, Any]] = {}
+
+        async def fake_lookup(turn_key: str):
+            return stored.get(turn_key)
+
+        async def fake_record(turn_key, meeting_id, agent_id, payload):
+            stored[turn_key] = turn_cache._rehydrate(dict(payload))
+
+        monkeypatch.setattr(agents_module.turn_cache, "lookup", fake_lookup)
+        monkeypatch.setattr(agents_module.turn_cache, "record", fake_record)
+
+        node = agents_module.create_role_agent_node(AGENT_ID)
+        first = await node(_state(), _config())  # type: ignore[arg-type]
+        assert len(patched_sandbox.turns) == 1
+
+        second = await node(_state(), _config())  # type: ignore[arg-type]
+        # The sandbox must not have been asked a second time.
+        assert len(patched_sandbox.turns) == 1, "replay re-invoked the model"
+        assert second["messages"][0].content == first["messages"][0].content
+        assert is_utterance(second["messages"][0]), "rehydrated message lost its metadata"
+
+    def test_round_trip_preserves_audit_and_sandbox(self) -> None:
+        from app.orchestration.agents import _serialisable
+        from app.services.turn_cache import _rehydrate
+
+        original = agents_module._success_state(
+            AGENT_ID,
+            "sandbox-1",
+            type(
+                "R",
+                (),
+                {
+                    "turn_key": "m:1:a",
+                    "public_content": "[Jane Roe - CFO] Revenue is up.",
+                    "private_reasoning": "checked",
+                    "tool_calls": [],
+                    "tool_results": [],
+                },
+            )(),
+        )
+        restored = _rehydrate(_serialisable(original))
+        assert restored["sandboxes"] == {AGENT_ID: "sandbox-1"}
+        assert restored["messages"][0].content == original["messages"][0].content
+        assert is_utterance(restored["messages"][0])

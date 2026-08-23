@@ -34,6 +34,9 @@ class ModelConfig(BaseModel):
     model_name: str
     temperature: float = 0.7
     timeout_seconds: int = 60
+    # Caps a turn's spoken output. Unbounded generation stalls turns and, on
+    # some providers, overruns the context window into a server error.
+    max_tokens: int = 800
     ignore_tls: bool = False
 
 
