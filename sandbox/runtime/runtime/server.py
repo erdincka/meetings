@@ -32,6 +32,10 @@ structlog.configure(
     processors=[
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.add_log_level,
+        # Without this, exc_info=True renders as the literal `true` and the
+        # traceback is dropped -- which is how an intermittent TypeError in the
+        # agent loop stayed undiagnosable across several runs.
+        structlog.processors.format_exc_info,
         structlog.processors.JSONRenderer(),
     ],
     logger_factory=structlog.PrintLoggerFactory(),
