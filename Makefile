@@ -2,6 +2,10 @@
 # Every target is idempotent and safe to re-run.
 
 SHELL          := /bin/bash
+# Rancher Desktop and Homebrew shims are not on PATH in a non-login shell, so a
+# recipe would silently fall back to "command not found" -- which chart-validate
+# then reported as a clean run over zero resources.
+export PATH := $(HOME)/.rd/bin:/opt/homebrew/bin:$(PATH)
 CLUSTER        ?= meetings
 KCTX           ?= kind-$(CLUSTER)
 KUBECTL        ?= kubectl --context $(KCTX)
@@ -137,7 +141,9 @@ test: ## Backend + sandbox runtime tests with coverage
 	cd sandbox/runtime && uv run pytest tests -v
 
 chart-validate: ## Render every values profile and validate against API schemas
-	@for f in values.yaml values-local.yaml; do \
+	@command -v helm >/dev/null || { echo "helm not found on PATH"; exit 1; }
+	@command -v kubeconform >/dev/null || { echo "kubeconform not found on PATH"; exit 1; }
+	@set -e; for f in values.yaml values-local.yaml; do \
 	  echo ">> $$f"; \
 	  helm template meetings deploy/charts/meetings -n meetings \
 	    -f deploy/charts/meetings/$$f \
