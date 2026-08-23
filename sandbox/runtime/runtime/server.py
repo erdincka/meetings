@@ -70,7 +70,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The projected ServiceAccount token is re-read per request rather than
     # captured once: kubelet rotates it, and a long-lived sandbox outlives the
     # original token's validity.
-    def auth_headers(request: httpx.Request) -> None:
+    # Must be async: httpx awaits event hooks on an AsyncClient, so a sync hook
+    # returns None and every request through this client dies with
+    # "object NoneType can't be used in 'await' expression". It only ever fired
+    # when an agent actually called a tool, so it read as random turn failures
+    # and hid how often the agents were reaching for tools.
+    async def auth_headers(request: httpx.Request) -> None:
         token = _read(SA_TOKEN_FILE)
         if token:
             request.headers["Authorization"] = f"Bearer {token}"
