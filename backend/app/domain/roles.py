@@ -76,7 +76,6 @@ class RoleAgentUpdate(BaseModel):
 
 class RoleAgentResponse(RoleAgentBase):
     id: UUID
-    private_library_id: UUID
     created_at: datetime
     updated_at: datetime
 

@@ -29,9 +29,6 @@ class RoleAgent(Base, TimestampMixin):
     challenge_style: Mapped[str | None] = mapped_column(String(100))
 
     allowed_shared_library_access: Mapped[bool] = mapped_column(Boolean, default=True)
-    private_library_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), default=uuid.uuid4, unique=True
-    )
 
     system_prompt: Mapped[str | None] = mapped_column(Text)
 
