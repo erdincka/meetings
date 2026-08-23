@@ -4,11 +4,37 @@ import structlog
 from langgraph.graph import END, START, StateGraph
 
 from app.models.roles import RoleAgent
+from app.orchestration import profiles
 from app.orchestration.agents import create_role_agent_node
 from app.orchestration.state import MeetingState
 from app.orchestration.supervisor import supervisor_node
 
 logger = structlog.get_logger(__name__)
+
+
+def validate_attendee_profiles(attendees: dict[str, RoleAgent]) -> dict[str, str]:
+    """Resolve every attendee's profile, refusing the meeting on drift.
+
+    Checked here, once, rather than when an agent first speaks. A persona whose
+    configured tools no provisioned profile can supply is a mismatch between
+    what the UI advertises and what the cluster will permit -- and discovering
+    that three turns in, as one participant silently failing, is much worse than
+    refusing to start with a precise message.
+    """
+    resolved: dict[str, str] = {}
+    problems: list[str] = []
+    for agent_id, role in attendees.items():
+        try:
+            resolved[agent_id] = profiles.resolve(list(role.default_tools or [])).name
+        except profiles.ProfileDriftError as exc:
+            problems.append(f"{role.display_name} ({role.title}): {exc}")
+
+    if problems:
+        raise profiles.ProfileDriftError(
+            "Cannot start: some attendees request capabilities no profile provides.\n"
+            + "\n".join(f"  - {p}" for p in problems)
+        )
+    return resolved
 
 
 def build_meeting_graph(attendees: dict[str, RoleAgent]) -> StateGraph:

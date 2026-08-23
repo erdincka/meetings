@@ -14,7 +14,8 @@ from app.core import database
 from app.core.config import settings
 from app.models.meetings import Meeting
 from app.models.roles import RoleAgent
-from app.orchestration.graph import build_meeting_graph
+from app.orchestration.graph import build_meeting_graph, validate_attendee_profiles
+from app.orchestration.profiles import ProfileDriftError
 from app.sandbox.reaper import release_meeting_sandboxes
 from app.services.settings_service import get_runtime_settings
 
@@ -57,6 +58,16 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
         attendees = {str(r.id): r for r in (await session.execute(attendee_query)).scalars().all()}
         system_settings = await get_runtime_settings(session)
 
+        # Refuse the meeting if any attendee asks for capabilities no profile
+        # provides, rather than letting them fail silently mid-turn.
+        try:
+            resolved_profiles = validate_attendee_profiles(attendees)
+        except ProfileDriftError as exc:
+            await _update_meeting_status(meeting_id, "failed")
+            yield {"type": "error", "content": str(exc), "timestamp": _now_iso()}
+            return
+
+        logger.info("attendee_profiles_resolved", profiles=resolved_profiles)
         graph = build_meeting_graph(attendees)
 
         initial_state = {

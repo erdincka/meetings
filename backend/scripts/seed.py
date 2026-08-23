@@ -10,6 +10,7 @@ from app.core.database import require_session_maker
 from app.models.documents import Document, DocumentChunk
 from app.models.meetings import MeetingTemplate
 from app.models.roles import RoleAgent
+from app.orchestration import profiles
 from app.services.embedding_service import generate_embeddings
 
 logger = structlog.get_logger(__name__)
@@ -156,6 +157,10 @@ async def seed_data() -> None:
                     tone=SEED_RNG.sample(tones_pool, SEED_RNG.randint(2, 3)),
                     collaboration_style=SEED_RNG.choice(collab_pool),
                     challenge_style=SEED_RNG.choice(challenge_pool),
+                    # The tool grant. Resolution maps this to a capability
+                    # profile, which decides the SandboxTemplate, ServiceAccount
+                    # and NetworkPolicy the persona's sandbox is built from.
+                    default_tools=sorted(profiles.for_persona(r["title"]).tools),
                     system_prompt=(
                         "Always represent your department's interests strongly. "
                         "You have access to what other attendees have said. When it matters, "

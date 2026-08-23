@@ -116,3 +116,41 @@ class TestSeedMapping:
 
     def test_unknown_title_falls_back_to_baseline(self) -> None:
         assert for_persona("Chief Wombat Officer") is BASELINE
+
+
+class TestMeetingStartValidation:
+    """Drift is caught before the meeting starts, not three turns in."""
+
+    def test_valid_attendees_resolve(self) -> None:
+        from types import SimpleNamespace
+
+        from app.orchestration.graph import validate_attendee_profiles
+
+        attendees = {
+            "a": SimpleNamespace(
+                display_name="Jane", title="FD", default_tools=["run_python_analysis"]
+            ),
+            "b": SimpleNamespace(display_name="Ann", title="GC", default_tools=[]),
+        }
+        resolved = validate_attendee_profiles(attendees)  # type: ignore[arg-type]
+        assert resolved == {"a": "quant", "b": "baseline"}
+
+    def test_drift_refuses_the_meeting_and_names_the_persona(self) -> None:
+        """A persona the cluster will not permit must fail loudly, with enough
+        detail to fix the right field on the right persona."""
+        from types import SimpleNamespace
+
+        import pytest as _pytest
+
+        from app.orchestration.graph import validate_attendee_profiles
+
+        attendees = {
+            "a": SimpleNamespace(display_name="Jane Roe", title="FD", default_tools=["mint_money"]),
+        }
+        with _pytest.raises(ProfileDriftError) as excinfo:
+            validate_attendee_profiles(attendees)  # type: ignore[arg-type]
+
+        message = str(excinfo.value)
+        assert "Jane Roe" in message
+        assert "mint_money" in message
+        assert "Cannot start" in message
