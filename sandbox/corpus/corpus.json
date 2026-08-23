@@ -1,0 +1,37 @@
+[
+  {
+    "id": "iso-13485-recall",
+    "title": "Field Safety Corrective Actions under ISO 13485",
+    "source": "Quality Systems Quarterly",
+    "date": "2025-11-04",
+    "text": "A field safety corrective action is warranted where a defect trend is sustained across production lots rather than isolated to one. Regulators consistently distinguish a rising trend from a single excursion: the former implies a process fault and shifts the burden toward proactive recall, while the latter may be addressed by containment and rework. Manufacturers who wait for a customer complaint threshold before acting are routinely criticised in post-market surveillance audits."
+  },
+  {
+    "id": "recall-cost-benchmark",
+    "title": "Direct and Indirect Costs of Product Recalls in Industrial Equipment",
+    "source": "Institute for Manufacturing Economics",
+    "date": "2025-06-18",
+    "text": "Direct recall costs -- logistics, replacement units, administration -- typically fall between 4 and 9 percent of annual revenue for the affected line. Indirect costs are larger and slower: the median observed impact on subsequent-year orders is a 12 percent decline, recovering over roughly seven quarters. Firms that disclosed proactively recovered materially faster than those whose defect was surfaced by a regulator or a customer."
+  },
+  {
+    "id": "disclosure-timing",
+    "title": "Disclosure Timing and Directors' Duties",
+    "source": "Corporate Governance Review",
+    "date": "2026-02-11",
+    "text": "Where a board becomes aware of a defect likely to be material to the market, delaying disclosure to complete an internal investigation is defensible only for as long as the investigation is genuinely necessary to characterise the issue. Once the trend is understood, further delay tends to be construed as a decision rather than a process. Boards should record who knew what and when, since that record is the first thing sought in any subsequent proceeding."
+  },
+  {
+    "id": "defect-rate-thresholds",
+    "title": "Interpreting Defect Rate Movements in Regulated Manufacturing",
+    "source": "Reliability Engineering Notes",
+    "date": "2025-09-30",
+    "text": "A defect rate below one percent of units inspected is generally treated as process noise in mature lines. Sustained movement above three percent across consecutive quarters indicates a systematic cause, and above four percent most quality systems mandate escalation to the responsible executive. The rate of change matters more than the absolute figure: a line trending from 1.5 to 4.8 percent over four quarters is a stronger signal than one sitting flat at 4 percent."
+  },
+  {
+    "id": "supplier-change-control",
+    "title": "Supplier Change Control as a Root Cause",
+    "source": "Quality Systems Quarterly",
+    "date": "2026-01-22",
+    "text": "Unannounced supplier process changes remain among the most common root causes of gradual defect drift. Because the change is upstream and often undocumented, the resulting trend appears in outgoing inspection weeks or months later, and is frequently misattributed to inspection sensitivity. Investigators should compare defect onset against supplier qualification records before concluding that measurement changed."
+  }
+]

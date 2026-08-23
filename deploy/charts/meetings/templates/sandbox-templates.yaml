@@ -104,6 +104,20 @@ spec:
         ports:
           - {protocol: TCP, port: 5432}
       {{- end }}
+      {{- if and $profile.needsCorpusEgress $root.Values.corpus.enabled }}
+      # The external corpus, for profiles granted search_corpus. Everyone else
+      # has no route to it, quite apart from the tool not being registered.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ $root.Release.Namespace }}
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: {{ include "meetings.name" $root }}
+                app.kubernetes.io/component: corpus
+        ports:
+          - {protocol: TCP, port: 8080}
+      {{- end }}
       {{- if $profile.canExecuteCode }}
       # Delivering a job to a claimed exec sandbox and collecting its output.
       # Only profiles that may execute code need this route; RBAC already
@@ -187,6 +201,8 @@ spec:
               value: /etc/sandbox/secrets/inference-api-key
             - name: METRICS_DSN_FILE
               value: /etc/sandbox/secrets/metrics-dsn
+            - name: CORPUS_URL
+              value: "http://{{ include "meetings.name" $root }}-corpus.{{ $root.Release.Namespace }}.svc:8080"
             - name: SANDBOX_EXEC_NAMESPACE
               value: {{ $root.Values.sandbox.execNamespace }}
             - name: MEETINGS_PROFILE

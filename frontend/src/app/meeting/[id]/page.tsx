@@ -22,6 +22,7 @@ import {
 import AddDocDialog from "@/components/shared/AddDocDialog"
 import SandboxStatus from "@/components/meeting/SandboxStatus"
 import ToolAuditMatrix from "@/components/meeting/ToolAuditMatrix"
+import ArtifactPanel from "@/components/meeting/ArtifactPanel"
 import { toast } from 'sonner'
 
 const CHAT_COLORS = [
@@ -491,6 +492,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                 <TabsList className="grid w-full grid-cols-2 bg-muted/40 border-border/10">
                     <TabsTrigger value="events" className="text-[10px] uppercase font-bold tracking-wider">Events Log</TabsTrigger>
                     <TabsTrigger value="library" className="text-[10px] uppercase font-bold tracking-wider">Document Library</TabsTrigger>
+                    <TabsTrigger value="outputs" className="text-[10px] uppercase font-bold tracking-wider">Outputs</TabsTrigger>
                 </TabsList>
             </CardHeader>
 
@@ -525,6 +527,12 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                         <div ref={eventsEndRef} />
                     </div>
                 </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="outputs" className="flex-1 relative overflow-hidden min-h-0">
+              <ScrollArea className="h-full">
+                <ArtifactPanel meetingId={meetingId} attendees={roleMap} />
+              </ScrollArea>
             </TabsContent>
 
             <TabsContent value="library" className="flex-1 relative overflow-hidden flex flex-col p-0 min-h-0">

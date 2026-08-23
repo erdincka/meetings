@@ -100,8 +100,10 @@ images: ## Build app images and load them into the kind cluster
 	docker build --target runtime -t meetings-frontend:latest frontend
 	docker build --target runtime -t meetings-persona-runtime:latest sandbox/runtime
 	docker build -t meetings-exec-python:latest sandbox/exec-python
+	docker build -t meetings-corpus:latest sandbox/corpus
 	kind load docker-image meetings-backend:latest meetings-frontend:latest \
-	  meetings-persona-runtime:latest meetings-exec-python:latest --name $(CLUSTER)
+	  meetings-persona-runtime:latest meetings-exec-python:latest \
+	  meetings-corpus:latest --name $(CLUSTER)
 
 deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	$(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \

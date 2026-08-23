@@ -108,6 +108,11 @@ gateway:
   className: envoy
   host: meetings.localtest.me
 
+# Static corpus backing search_corpus. Offline so runs stay reproducible.
+corpus:
+  enabled: true
+  image: meetings-corpus:latest
+
 logLevel: INFO
 allowVolatileCheckpoints: false
 

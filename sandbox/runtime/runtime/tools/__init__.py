@@ -22,6 +22,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from .artifacts import build_artifact_tools
 from .code_exec import build_code_exec_tool
+from .corpus import build_corpus_tool
 from .metrics_sql import build_metrics_tool
 from .policy import build_policy_tool
 from .retrieval import build_retrieval_tool
@@ -32,6 +33,7 @@ _SINGLE: dict[str, Callable[..., StructuredTool]] = {
     "query_business_metrics": build_metrics_tool,
     "run_python_analysis": build_code_exec_tool,
     "check_policy_compliance": build_policy_tool,
+    "search_corpus": build_corpus_tool,
 }
 
 # Artifact tools are built together because they share a client and a scope.
