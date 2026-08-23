@@ -50,6 +50,28 @@ logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 logger = structlog.get_logger(__name__)
 
 
+async def _prepare_checkpointer() -> None:
+    """Ensure the LangGraph checkpointer schema exists before serving traffic."""
+    if not settings.DATABASE_URL:
+        return
+    try:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from psycopg_pool import AsyncConnectionPool
+
+        dsn = settings.DATABASE_URL.replace("+asyncpg", "")
+        async with AsyncConnectionPool(
+            dsn, max_size=2, min_size=1, kwargs={"autocommit": True}
+        ) as pool:
+            # Same row-factory mismatch as in meeting_executor: the saver sets
+            # its own per-cursor factory, so this is safe at runtime.
+            await AsyncPostgresSaver(pool).setup()  # type: ignore[arg-type]
+        logger.info("checkpointer_schema_ready")
+    except Exception as exc:
+        # Not fatal: the executor still refuses to run a meeting it cannot
+        # checkpoint, which is the guarantee that matters.
+        logger.warning("checkpointer_prepare_failed", error=f"{type(exc).__name__}: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup and shutdown. Replaces the deprecated @app.on_event hooks."""
@@ -60,6 +82,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db_configured=bool(settings.DATABASE_URL),
         inference_configured=settings.inference_configured,
     )
+    # Create the checkpointer schema now, not on the first meeting.
+    #
+    # AsyncPostgresSaver.setup() is idempotent but on a fresh database it
+    # creates several tables and indexes, which can exceed the per-meeting
+    # timeout. That made the *first* meeting on any new cluster fail and every
+    # subsequent one succeed -- a self-healing symptom that looks like flakiness
+    # and wastes an afternoon. Paying the cost once, at startup, removes it.
+    await _prepare_checkpointer()
+
     # A backend killed mid-meeting never releases its sandboxes. Sweep any that
     # belong to meetings which are no longer running.
     try:

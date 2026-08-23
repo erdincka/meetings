@@ -1,0 +1,56 @@
+# Runs the least-privilege demo meeting to completion, inside the cluster.
+#
+# In-cluster because a meeting takes minutes and a WebSocket disconnect cancels
+# it -- so driving it over `kubectl exec` means an exec stream dropping takes the
+# meeting with it, which is exactly what happened.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: meetings-demo
+  namespace: meetings
+data:
+  run-demo.py: |
+{{SCRIPT}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: meetings-demo
+  namespace: meetings
+spec:
+  backoffLimit: 0
+  # Kept after finishing so the transcript stays readable in the logs.
+  ttlSecondsAfterFinished: 7200
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: demo
+          image: meetings-backend:latest
+          imagePullPolicy: Never
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          command: ["python", "/demo/run-demo.py"]
+          env:
+            - name: BACKEND_URL
+              value: "http://meetings-backend.meetings.svc:8000/api/v1"
+            - name: TURN_LIMIT
+              value: "4"
+          volumeMounts:
+            - {name: demo, mountPath: /demo}
+            - {name: tmp, mountPath: /tmp}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - name: demo
+          configMap: {name: meetings-demo}
+        - name: tmp
+          emptyDir: {}

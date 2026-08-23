@@ -12,7 +12,7 @@ CALICO_VER     ?= v3.31.1
 
 .DEFAULT_GOAL := help
 .PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox \
-        smoke-pgvector smoke-netpol deploy images lint test check security migrate seed status
+        smoke-pgvector smoke-netpol deploy images lint test check security migrate seed demo status
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -102,6 +102,17 @@ images: ## Build app images and load them into the kind cluster
 deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	$(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
 	  -f deploy/charts/meetings/values-local.yaml --wait --timeout 6m
+
+demo: ## Run the least-privilege demo meeting to completion (in-cluster)
+	@python3 -c "from pathlib import Path; \
+	  s=Path('deploy/demo/run-demo.py').read_text(); \
+	  i='\n'.join('    '+l if l.strip() else '' for l in s.splitlines()); \
+	  t=Path('deploy/demo/demo-job.yaml').read_text(); \
+	  Path('deploy/demo/demo-job.rendered.yaml').write_text(t.replace('{{SCRIPT}}', i))"
+	$(KUBECTL) delete job meetings-demo -n meetings --ignore-not-found
+	$(KUBECTL) apply -f deploy/demo/demo-job.rendered.yaml
+	$(KUBECTL) -n meetings wait --for=condition=Ready pod -l job-name=meetings-demo --timeout=120s
+	$(KUBECTL) -n meetings logs -f job/meetings-demo
 
 seed: ## Load reference personas, documents and templates
 	$(KUBECTL) -n meetings exec deploy/meetings-backend -- \
