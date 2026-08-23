@@ -1,8 +1,9 @@
 "use client"
 
 import React, { useState } from "react"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { apiClient } from "@/lib/api-client"
+import type { Role } from "@/lib/types"
 import { 
   Dialog, 
   DialogContent, 
@@ -25,22 +26,28 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Loader2, Save, RotateCcw, Info } from "lucide-react"
 
-interface Role {
-  id: string;
-  display_name: string;
-  title: string;
-  department: string;
-  summary: string;
-  seniority?: string;
-  responsibilities: string[];
-  kpis: string[];
-  priorities: string[];
-  objectives: string[];
-  risk_tolerance: string;
-  tone: string[];
-  collaboration_style: string;
-  challenge_style: string;
-  system_prompt: string;
+
+interface ToolInfo {
+  name: string;
+  guidance: string;
+}
+
+interface ProfileInfo {
+  name: string;
+  description: string;
+  tools: string[];
+  can_execute_code: boolean;
+  holds_metrics_credential: boolean;
+}
+
+interface Resolution {
+  resolved: string | null;
+  description?: string;
+  in_profile: boolean;
+  reason?: string;
+  granted_tools?: string[];
+  can_execute_code?: boolean;
+  holds_metrics_credential?: boolean;
 }
 
 interface PersonaEditorProps {
@@ -72,6 +79,7 @@ function normalisePersona(role: Role | null | undefined): Partial<Role> {
     kpis: role.kpis || [],
     priorities: role.priorities || [],
     objectives: role.objectives || [],
+    default_tools: role.default_tools || [],
     tone,
   };
 }
@@ -82,6 +90,42 @@ export const PersonaEditor = ({ role, isOpen, onClose }: PersonaEditorProps) => 
   // caused a cascading re-render on every open. The caller remounts this with
   // key={role.id}, so switching persona resets the form.
   const [formData, setFormData] = useState<Partial<Role>>(() => normalisePersona(role));
+
+  // The catalogue and the resolution rule both live on the server. A second
+  // copy of "which profile covers these tools" in TypeScript would drift from
+  // the one that decides what the cluster actually permits.
+  const { data: catalog } = useQuery({
+    queryKey: ['capability-catalog'],
+    queryFn: async () => {
+      return apiClient.get<{ tools: ToolInfo[]; profiles: ProfileInfo[] }>(
+        '/roles/capabilities/catalog'
+      );
+    },
+    staleTime: Infinity,
+  });
+
+  const selectedTools = formData.default_tools || [];
+
+  const { data: resolution } = useQuery({
+    queryKey: ['capability-resolve', [...selectedTools].sort()],
+    queryFn: async () => {
+      return apiClient.post<Resolution>('/roles/capabilities/resolve', {
+        tools: selectedTools,
+      });
+    },
+  });
+
+  const toggleTool = (tool: string) => {
+    setFormData((prev) => {
+      const current = prev.default_tools || [];
+      return {
+        ...prev,
+        default_tools: current.includes(tool)
+          ? current.filter((t) => t !== tool)
+          : [...current, tool],
+      };
+    });
+  };
 
   const mutation = useMutation({
     mutationFn: async (updatedRole: Partial<Role>) => {
@@ -143,6 +187,7 @@ export const PersonaEditor = ({ role, isOpen, onClose }: PersonaEditorProps) => 
               <TabsTrigger value="profile" className="data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-1 text-sm font-bold uppercase tracking-widest text-muted-foreground/50">Identity</TabsTrigger>
               <TabsTrigger value="style" className="data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-1 text-sm font-bold uppercase tracking-widest text-muted-foreground/50">Behaviors</TabsTrigger>
               <TabsTrigger value="focus" className="data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-1 text-sm font-bold uppercase tracking-widest text-muted-foreground/50">Strategic Focus</TabsTrigger>
+              <TabsTrigger value="capabilities" className="data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-1 text-sm font-bold uppercase tracking-widest text-muted-foreground/50">Capabilities</TabsTrigger>
               <TabsTrigger value="prompt" className="data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-1 text-sm font-bold uppercase tracking-widest text-muted-foreground/50">Logic Prompt</TabsTrigger>
             </TabsList>
           </div>
@@ -301,6 +346,83 @@ export const PersonaEditor = ({ role, isOpen, onClose }: PersonaEditorProps) => 
                     className="bg-muted border-border min-h-[140px] text-sm leading-relaxed"
                   />
                 </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="capabilities" className="space-y-6 mt-0">
+              <div>
+                <div className="text-sm font-bold uppercase tracking-widest text-muted-foreground/50 mb-2">Tool grant</div>
+                <p className="text-[13px] text-muted-foreground mb-4">
+                  What this persona is allowed to do. The grant is enforced by Kubernetes -- ServiceAccount, RBAC, NetworkPolicy and the secrets mounted into the pod -- not by the prompt. A persona that asks for a tool outside its profile is refused at the apiserver, not talked out of it.
+                </p>
+
+                <div className="space-y-2">
+                  {(catalog?.tools || []).map((tool: ToolInfo) => {
+                    const checked = selectedTools.includes(tool.name);
+                    const granted = resolution?.granted_tools?.includes(tool.name) ?? false;
+                    return (
+                      <label
+                        key={tool.name}
+                        className="flex items-start gap-3 rounded-md border border-border p-3 cursor-pointer hover:bg-foreground/5"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleTool(tool.name)}
+                          className="mt-1"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono text-[13px] flex items-center gap-2">
+                            {tool.name}
+                            {!checked && granted && (
+                              <span className="text-[10px] uppercase tracking-wider text-muted-foreground border border-border rounded px-1.5 py-0.5">
+                                included by profile
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[12px] text-muted-foreground">{tool.guidance}</div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-md border border-border p-4">
+                <div className="text-sm font-bold uppercase tracking-widest text-muted-foreground/50 mb-2">Resolved profile</div>
+                {resolution?.in_profile ? (
+                  <div className="space-y-2">
+                    <div className="font-mono text-sm">{resolution.resolved}</div>
+                    <div className="text-[13px] text-muted-foreground">{resolution.description}</div>
+                    <div className="flex gap-4 text-[12px] pt-1">
+                      <span className={resolution.can_execute_code ? "text-amber-500" : "text-muted-foreground"}>
+                        {resolution.can_execute_code ? "may execute code" : "cannot execute code"}
+                      </span>
+                      <span className={resolution.holds_metrics_credential ? "text-amber-500" : "text-muted-foreground"}>
+                        {resolution.holds_metrics_credential ? "holds a metrics credential" : "no database credential"}
+                      </span>
+                    </div>
+                    {/* The pod receives the profile's whole tool set, so showing
+                        only what was ticked would understate the real grant. */}
+                    {(resolution.granted_tools?.length ?? 0) > selectedTools.length && (
+                      <div className="text-[12px] text-muted-foreground pt-1">
+                        This profile also grants:{" "}
+                        <span className="font-mono">
+                          {(resolution.granted_tools || [])
+                            .filter((t: string) => !selectedTools.includes(t))
+                            .join(", ")}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-[13px] text-destructive">
+                    {resolution?.reason || "This selection does not fit any profile."}
+                    <div className="text-muted-foreground pt-1">
+                      A meeting will refuse to start while this persona is out of profile.
+                    </div>
+                  </div>
+                )}
               </div>
             </TabsContent>
 

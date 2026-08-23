@@ -2,29 +2,12 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { apiClient } from "@/lib/api-client"
+import type { Role } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Loader2, Users, Edit3, Shield, Activity, Target } from "lucide-react"
 import { PersonaEditor } from "@/components/PersonaEditor"
-
-interface Role {
-  id: string;
-  display_name: string;
-  title: string;
-  department: string;
-  summary: string;
-  seniority?: string;
-  responsibilities: string[];
-  kpis: string[];
-  priorities: string[];
-  objectives: string[];
-  risk_tolerance: string;
-  tone: string[];
-  collaboration_style: string;
-  challenge_style: string;
-  system_prompt: string;
-}
 
 export default function RolesPage() {
   const { data: roles = [], isLoading, isError } = useQuery<Role[]>({ 
