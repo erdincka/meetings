@@ -39,7 +39,12 @@ class ModelConfig(BaseModel):
     reasoning_effort: str = ""
     # Caps a turn's spoken output. Unbounded generation stalls turns and, on
     # some providers, overruns the context window into a server error.
-    max_tokens: int = 800
+    #
+    # It has to cover a whole ReAct step, not just the reply: a reasoning model
+    # thinks, calls a tool, reads the result, then answers. At 800 the budget
+    # was spent before the answer, and a Finance Director that had just queried
+    # the warehouse contributed "(no comment this turn)".
+    max_tokens: int = 2048
     ignore_tls: bool = False
 
 
