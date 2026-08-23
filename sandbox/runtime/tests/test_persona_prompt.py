@@ -8,6 +8,7 @@ so editing a persona changed nothing about how it behaved.
 from __future__ import annotations
 
 from runtime.persona import build_system_prompt, render_attendee_list
+from runtime.prompts import DEFAULT_AGENT_PROMPT
 from runtime.protocol import Attendee, PersonaSpec
 
 PERSONA = PersonaSpec(
@@ -36,6 +37,7 @@ def _render(template: str) -> str:
         brief="A defect was found.",
         expectations="A decision today.",
         attendee_list="- Ann Lee (CEO, Executive)",
+        tools="- `retrieve_documents`: search the library",
     )
 
 
@@ -107,3 +109,121 @@ class TestAttendeeList:
     def test_solo_meeting(self) -> None:
         attendees = [Attendee(id="a", display_name="Jane", title="CFO", department="Finance")]
         assert render_attendee_list(attendees, "a") == "No other participants."
+
+
+class TestShippedPromptIsComplete:
+    """The default prompt must actually use the persona it is given.
+
+    This is the regression that motivated Phase 4: every field below was
+    persisted, editable in the UI, and referenced by no template -- so editing a
+    persona changed precisely nothing about how it behaved. Substituting a value
+    nobody interpolates is not the same as using it.
+    """
+
+    def test_every_persona_field_reaches_the_default_prompt(self) -> None:
+        from runtime.protocol import PersonaSpec
+
+        # Distinctive values, so a match cannot be coincidental.
+        persona = PersonaSpec(
+            display_name="Jane Roe",
+            title="CFO",
+            department="Finance",
+            summary="SUMMARY-MARKER",
+            seniority="SENIORITY-MARKER",
+            responsibilities=["RESP-MARKER"],
+            kpis=["KPI-MARKER"],
+            objectives=["OBJ-MARKER"],
+            priorities=["PRIO-MARKER"],
+            risk_tolerance="RISK-MARKER",
+            tone=["TONE-MARKER"],
+            collaboration_style="COLLAB-MARKER",
+            challenge_style="CHALLENGE-MARKER",
+        )
+        out = build_system_prompt(
+            DEFAULT_AGENT_PROMPT,
+            persona,
+            objective="OBJECTIVE-MARKER",
+            agenda="AGENDA-MARKER",
+            brief="BRIEF-MARKER",
+            expectations="EXPECT-MARKER",
+            attendee_list="ATTENDEE-MARKER",
+            tools="TOOLS-MARKER",
+        )
+        for marker in (
+            "SUMMARY-MARKER",
+            "SENIORITY-MARKER",
+            "RESP-MARKER",
+            "KPI-MARKER",
+            "OBJ-MARKER",
+            "PRIO-MARKER",
+            "RISK-MARKER",
+            "TONE-MARKER",
+            "COLLAB-MARKER",
+            "CHALLENGE-MARKER",
+            "OBJECTIVE-MARKER",
+            "AGENDA-MARKER",
+            "BRIEF-MARKER",
+            "EXPECT-MARKER",
+            "ATTENDEE-MARKER",
+            "TOOLS-MARKER",
+        ):
+            assert marker in out, f"{marker} never reached the prompt"
+        assert "{{" not in out, "an unsubstituted placeholder remains"
+
+    def test_prompt_instructs_the_agent_to_use_tools(self) -> None:
+        """Agents talked instead of acting because nothing told them to act."""
+        assert "USE YOUR TOOLS" in DEFAULT_AGENT_PROMPT
+
+    def test_prompt_tells_the_agent_what_a_refusal_means(self) -> None:
+        """A denied tool should read as a policy decision, not a malfunction."""
+        assert "refuses" in DEFAULT_AGENT_PROMPT.lower()
+
+
+class TestPersonaGuidanceIsContentNotTemplate:
+    """A persona's own notes must not displace the structured prompt.
+
+    Regression: RoleAgent.system_prompt was passed as the whole template, so a
+    persona carrying ~200 characters of flavour text lost every placeholder --
+    responsibilities, KPIs, the objective, and the tool guidance that tells the
+    agent it can act at all. Agents talked and never called a tool.
+    """
+
+    def test_guidance_appears_in_the_rendered_prompt(self) -> None:
+        from runtime.protocol import PersonaSpec
+
+        persona = PersonaSpec(
+            display_name="Jane Roe",
+            title="CFO",
+            department="Finance",
+            guidance="GUIDANCE-MARKER",
+            responsibilities=["RESP-MARKER"],
+        )
+        out = build_system_prompt(
+            DEFAULT_AGENT_PROMPT,
+            persona,
+            objective="o",
+            agenda="a",
+            brief="b",
+            expectations="e",
+            attendee_list="x",
+            tools="TOOLS-MARKER",
+        )
+        # The guidance is present *and* so is everything it used to displace.
+        assert "GUIDANCE-MARKER" in out
+        assert "RESP-MARKER" in out
+        assert "TOOLS-MARKER" in out
+
+    def test_absent_guidance_leaves_no_placeholder_behind(self) -> None:
+        from runtime.protocol import PersonaSpec
+
+        out = build_system_prompt(
+            DEFAULT_AGENT_PROMPT,
+            PersonaSpec(display_name="A", title="B", department="C"),
+            objective="o",
+            agenda="a",
+            brief="b",
+            expectations="e",
+            attendee_list="x",
+            tools="t",
+        )
+        assert "{{" not in out

@@ -64,6 +64,10 @@ class PersonaSpec(BaseModel):
     display_name: str
     title: str
     department: str
+    # The operator's free-text notes for this persona. Formerly used as the
+    # whole prompt template, which discarded every other field; it is guidance
+    # inside the template now, not a replacement for it.
+    guidance: str | None = None
     summary: str | None = None
     seniority: str | None = None
     responsibilities: list[str] = Field(default_factory=list)

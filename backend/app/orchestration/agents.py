@@ -61,6 +61,7 @@ def _persona_from_role(role: Any) -> PersonaSpec:
         display_name=role.display_name,
         title=role.title,
         department=role.department,
+        guidance=role.system_prompt,
         summary=role.summary,
         seniority=role.seniority,
         responsibilities=list(role.responsibilities or []),
@@ -130,10 +131,15 @@ def create_role_agent_node(
             agent_id=agent_id,
             meeting_id=meeting_id,
             persona=persona,
+            # role.system_prompt used to sit in this position, so a persona
+            # with any notes at all replaced the entire structured template
+            # with ~200 characters of flavour text. Every placeholder went with
+            # it: no responsibilities, no KPIs, no tool guidance -- which is why
+            # agents never called a tool. It is persona guidance now, carried
+            # inside the template (see PersonaSpec.guidance). Only an operator
+            # editing the prompt itself replaces the template.
             system_prompt_template=(
-                getattr(settings_obj, "agent_prompt", None)
-                or role.system_prompt
-                or DEFAULT_AGENT_PROMPT
+                getattr(settings_obj, "agent_prompt", None) or DEFAULT_AGENT_PROMPT
             ),
             # Grant the profile's full tool set rather than only what the
             # persona asked for: resolution already picked the smallest profile

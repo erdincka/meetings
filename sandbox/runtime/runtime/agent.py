@@ -31,6 +31,7 @@ from .protocol import (
     TurnResult,
 )
 from .recovery import as_text, split_thought, strip_speaker_prefix
+from .tool_guidance import render_tool_guidance
 from .tools import build_tools
 from .tools.code_exec import DENIED_PREFIX
 
@@ -101,6 +102,7 @@ class BoundPersona:
             brief=request.brief,
             expectations=request.expectations,
             attendee_list=render_attendee_list(request.attendees, self.bind.agent_id),
+            tools=render_tool_guidance(self.active_tools),
         )
 
         history = [HumanMessage(content=u.content) for u in request.transcript]
@@ -124,7 +126,15 @@ class BoundPersona:
         try:
             response = await agent.ainvoke({"messages": history})
         except Exception as exc:
-            logger.error("agent_invocation_failed", error=str(exc))
+            # Keep the traceback. This path produced an intermittent
+            # "object NoneType can't be used in 'await' expression" that was
+            # undiagnosable from the message alone, because the frame where the
+            # None was awaited never reached the log.
+            logger.error(
+                "agent_invocation_failed",
+                error=f"{type(exc).__name__}: {exc}",
+                exc_info=True,
+            )
             raise
 
         produced = response["messages"][len(history) :]
