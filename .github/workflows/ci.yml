@@ -80,6 +80,16 @@ jobs:
       - name: alembic drift check
         run: uv run alembic check
 
+      # The chart's profile values are generated from
+      # app/orchestration/profiles.py. If they drift, the tools the runtime
+      # registers and the Kubernetes objects that enforce them stop agreeing --
+      # which is precisely the failure this project exists to make impossible.
+      - name: profile values are in sync
+        working-directory: .
+        run: |
+          bash scripts/generate-profile-values.sh
+          git diff --exit-code deploy/charts/meetings/values.yaml
+
   sandbox-runtime:
     name: sandbox runtime (lint, types, tests)
     runs-on: ubuntu-latest

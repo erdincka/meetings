@@ -86,8 +86,9 @@ images: ## Build app images and load them into the kind cluster
 	docker build --target runtime -t meetings-backend:latest backend
 	docker build --target runtime -t meetings-frontend:latest frontend
 	docker build --target runtime -t meetings-persona-runtime:latest sandbox/runtime
+	docker build -t meetings-exec-python:latest sandbox/exec-python
 	kind load docker-image meetings-backend:latest meetings-frontend:latest \
-	  meetings-persona-runtime:latest --name $(CLUSTER)
+	  meetings-persona-runtime:latest meetings-exec-python:latest --name $(CLUSTER)
 
 deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	$(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
@@ -108,6 +109,7 @@ lint: ## ruff + format + mypy + eslint + tsc + helm/kubeconform
 	cd frontend && npm run lint
 	cd frontend && npx tsc --noEmit
 	bash sandbox/runtime/sync-shared.sh && git diff --exit-code sandbox/runtime/runtime/protocol.py sandbox/runtime/runtime/recovery.py
+	bash scripts/generate-profile-values.sh && git diff --exit-code deploy/charts/meetings/values.yaml
 	$(MAKE) chart-validate
 
 test: ## Backend + sandbox runtime tests with coverage
