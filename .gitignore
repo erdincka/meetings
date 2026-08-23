@@ -56,3 +56,6 @@ frontend/next-env.d.ts
 
 # Helm
 helm/charts/
+
+# Large demo media -- published as a GitHub release asset, not committed
+.local-assets/

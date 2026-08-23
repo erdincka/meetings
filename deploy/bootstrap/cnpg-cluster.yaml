@@ -1,0 +1,64 @@
+# Postgres for Agentic Meetings.
+#
+# pgvector arrives as a Kubernetes ImageVolume rather than a custom-baked
+# Postgres image: CNPG mounts the extension read-only at /extensions/pgvector
+# and wires extension_control_path / dynamic_library_path automatically. This
+# needs PostgreSQL 18+ (for the extension_control_path GUC), containerd 2.1+
+# (we run 2.3.1) and the ImageVolume feature gate (enabled in cluster.yaml).
+#
+# Because extensions are mounted separately, the base image is the *minimal*
+# variant rather than -system or -standard.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: meetings-metrics-ro
+  namespace: meetings
+type: kubernetes.io/basic-auth
+stringData:
+  username: metrics_ro
+  # Dev-only credential. Real deployments source this from an external secret
+  # manager; it is committed here so `make kind-up` is reproducible.
+  password: metrics-ro-local-dev
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: meetings-postgres
+  namespace: meetings
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-minimal-trixie
+
+  postgresql:
+    extensions:
+      - name: pgvector
+        image:
+          reference: ghcr.io/cloudnative-pg/pgvector:0.8.1-202602120909-18-trixie
+
+  bootstrap:
+    initdb:
+      database: meetings
+      owner: appuser
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector;
+
+        # The business-metrics schema queried by the `analyst` capability
+        # profile. It is deliberately a SEPARATE role from the app owner: the
+        # DSN handed to analyst sandboxes can read these tables and nothing
+        # else, so a prompt-injected agent cannot reach application data.
+        - CREATE SCHEMA IF NOT EXISTS metrics;
+        - CREATE ROLE metrics_ro LOGIN PASSWORD 'metrics-ro-local-dev';
+        - ALTER ROLE metrics_ro SET default_transaction_read_only = on;
+        - ALTER ROLE metrics_ro SET statement_timeout = '5s';
+        - GRANT USAGE ON SCHEMA metrics TO metrics_ro;
+        - GRANT SELECT ON ALL TABLES IN SCHEMA metrics TO metrics_ro;
+        - ALTER DEFAULT PRIVILEGES IN SCHEMA metrics GRANT SELECT ON TABLES TO metrics_ro;
+        # Belt and braces: no reach into the application schema at all.
+        - REVOKE ALL ON SCHEMA public FROM metrics_ro;
+
+  storage:
+    size: 5Gi
+
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: "1",  memory: 1Gi}

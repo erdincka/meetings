@@ -1,207 +1,227 @@
-import os
-import subprocess
-from datetime import datetime, timezone
-import httpx
+"""System status and one-time setup.
 
+The setup wizard's job changed in Phase 1. It no longer receives a database
+URI and API keys over HTTP and writes them to a plaintext file; credentials
+are environment-supplied from the ``meetings-runtime`` Secret. The wizard now
+*validates* what the operator configured, runs migrations, and seeds.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime
+from typing import Any
+
+import httpx
 import structlog
-from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.database import check_db_ready, drop_all_tables, init_db, create_all_tables
+from app.core.database import check_db_ready, get_db_session
 from app.core.network import normalize_v1_endpoint
 from app.domain.response import APIResponse
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
 
-class DBSetupRequest(BaseModel):
-    sqlalchemy_uri: str
-    recreate: bool = False
+# Setup progress lives in memory rather than in a config file. It is
+# per-process and intentionally ephemeral: the durable signal is the database
+# itself, which check_db_ready() reports on.
+_last_operation: dict[str, Any] | None = None
 
-    # LLM Settings
-    inference_endpoint: str | None = None
-    inference_api_key: str | None = None
-    inference_model_name: str | None = None
-    inference_ignore_tls: bool | None = None
 
-    # Embedding Settings
-    embedding_endpoint: str | None = None
-    embedding_api_key: str | None = None
-    embedding_model_name: str | None = None
-    embedding_ignore_tls: bool | None = None
-
-async def _verify_endpoint(endpoint: str | None, model_name: str | None, api_key: str | None, ignore_tls: bool) -> tuple[bool, str]:
+async def _verify_endpoint(
+    endpoint: str | None,
+    model_name: str | None,
+    api_key: str | None,
+    ignore_tls: bool,
+) -> tuple[bool, str]:
+    """Confirm an OpenAI-compatible endpoint is reachable and serves the model."""
     if not endpoint or not model_name:
-        return False, "Configuration missing"
-    
-    # Normalize endpoint
-    base_url = normalize_v1_endpoint(endpoint)
-    url = f"{base_url}/models"
+        return False, "Not configured"
+
+    url = f"{normalize_v1_endpoint(endpoint)}/models"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    
     try:
         async with httpx.AsyncClient(verify=not ignore_tls, timeout=5.0) as client:
             resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                models = []
-                if isinstance(data, dict):
-                    models = data.get("data") or data.get("models") or []
-                elif isinstance(data, list):
-                    models = data
-                
-                # Check if our model_name is in the list
-                found_names = []
-                for m in models:
-                    m_id = m if isinstance(m, str) else m.get("id")
-                    found_names.append(m_id)
-                    if m_id == model_name:
-                        return True, "Verified"
-                
-                return False, f"Model '{model_name}' not found. Available: {', '.join(found_names[:3])}..."
-            
-            return False, f"HTTP Error {resp.status_code}"
-    except Exception as e:
-        logger.warning("verification_failed", error=str(e), url=url)
-        return False, f"Connection Failed: {str(e)[:50]}"
+            if resp.status_code != 200:
+                return False, f"HTTP {resp.status_code}"
 
-def get_config_path():
-    return settings.CONFIG_FILE_PATH
+            data = resp.json()
+            if isinstance(data, dict):
+                models = data.get("data") or data.get("models") or []
+            else:
+                models = data
+
+            names = [m if isinstance(m, str) else m.get("id") for m in models]
+            if model_name in names:
+                return True, "Verified"
+            preview = ", ".join(str(n) for n in names[:3])
+            return False, f"Model '{model_name}' not served. Available: {preview}"
+    except Exception as exc:
+        logger.warning("endpoint_verification_failed", error=str(exc), url=url)
+        return False, f"Connection failed: {str(exc)[:60]}"
+
 
 @router.get("/status", response_model=APIResponse)
 async def system_status() -> APIResponse:
-    config = settings._load_config_file()
-    last_op = config.get("last_operation")
-    
-    status_data = {
-        "db_configured": False,
-        "inference_configured": False,
-        "inference_verified": False,
-        "inference_status": "Not checked",
-        "embedding_configured": False,
-        "embedding_verified": False,
-        "embedding_status": "Not checked",
-        "configured": False,
-        "ready": False,
-        "reasons": [],
-        "last_op": last_op
-    }
+    """Configuration and readiness.
 
-    # 1. Check Database
+    This is polled continuously by the frontend setup guard, so it must stay
+    cheap. It previously re-read and re-parsed a JSON file from disk on every
+    call; it now touches only in-memory config plus one DB count.
+    """
+    reasons: list[str] = []
+
+    db_configured = False
     if settings.DATABASE_URL:
-        try:
-            db_status = await check_db_ready()
-            if db_status == "ready":
-                status_data["db_configured"] = True
-            else:
-                status_data["reasons"].append(f"Database: {db_status}")
-        except Exception as e:
-            logger.error("db_check_failed", error=str(e))
-            status_data["reasons"].append("Database check error")
+        db_status = await check_db_ready()
+        if db_status == "ready":
+            db_configured = True
+        else:
+            reasons.append(f"Database: {db_status}")
     else:
-        status_data["reasons"].append("Database NOT configured")
+        reasons.append("DATABASE_URL is not set")
 
-    # 2. Check Inference (Verified check)
-    ss = settings.get_system_settings()
-    status_data["inference_configured"] = bool(ss.inference_endpoint and ss.inference_model_name)
-    if status_data["inference_configured"]:
-        v_ok, v_msg = await _verify_endpoint(
-            ss.inference_endpoint, ss.inference_model_name, ss.inference_api_key, ss.inference_ignore_tls
+    inference_configured = settings.inference_configured
+    inference_verified, inference_status = (False, "Not configured")
+    if inference_configured:
+        inference_verified, inference_status = await _verify_endpoint(
+            settings.INFERENCE_ENDPOINT,
+            settings.INFERENCE_MODEL_NAME,
+            settings.INFERENCE_API_KEY,
+            settings.INFERENCE_IGNORE_TLS,
         )
-        status_data["inference_verified"] = v_ok
-        status_data["inference_status"] = v_msg
-        if not v_ok:
-            status_data["reasons"].append(f"Inference: {v_msg}")
+        if not inference_verified:
+            reasons.append(f"Inference: {inference_status}")
     else:
-        status_data["reasons"].append("Inference NOT configured")
-    
-    # 3. Check Embedding (Verified check)
-    status_data["embedding_configured"] = bool(ss.embedding_endpoint and ss.embedding_model_name)
-    if status_data["embedding_configured"]:
-        v_ok, v_msg = await _verify_endpoint(
-            ss.embedding_endpoint, ss.embedding_model_name, ss.embedding_api_key, ss.embedding_ignore_tls
+        reasons.append("INFERENCE_ENDPOINT / INFERENCE_MODEL_NAME are not set")
+
+    embedding_configured = settings.embedding_configured
+    embedding_verified, embedding_status = (False, "Not configured")
+    if embedding_configured:
+        embedding_verified, embedding_status = await _verify_endpoint(
+            settings.EMBEDDING_ENDPOINT,
+            settings.EMBEDDING_MODEL_NAME,
+            settings.EMBEDDING_API_KEY,
+            settings.EMBEDDING_IGNORE_TLS,
         )
-        status_data["embedding_verified"] = v_ok
-        status_data["embedding_status"] = v_msg
-        if not v_ok:
-            status_data["reasons"].append(f"Embedding: {v_msg}")
+        if not embedding_verified:
+            reasons.append(f"Embedding: {embedding_status}")
     else:
-        status_data["reasons"].append("Embedding NOT configured")
+        reasons.append("EMBEDDING_ENDPOINT / EMBEDDING_MODEL_NAME are not set")
 
-    # Final State Logic
-    status_data["configured"] = bool(
-        settings.DATABASE_URL and 
-        status_data["inference_configured"] and 
-        status_data["embedding_configured"]
-    )
+    configured = bool(settings.DATABASE_URL) and inference_configured and embedding_configured
 
-    # Ready means configured AND database has data AND endpoints are verified
-    if status_data["configured"] and status_data["db_configured"] and status_data["inference_verified"] and status_data["embedding_verified"]:
-        status_data["ready"] = True
-    
-    return APIResponse(status="success", data=status_data)
-
-@router.post("/setup-db", response_model=APIResponse)
-async def setup_database(req: DBSetupRequest, background_tasks: BackgroundTasks) -> APIResponse:
-    test_url = req.sqlalchemy_uri
-
-    # Normalise and validate URI
-    if test_url.startswith("postgres://"):
-        test_url = test_url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif test_url.startswith("postgresql://"):
-        test_url = test_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    elif not test_url.startswith("postgresql+asyncpg://"):
-        # Log the failed URI for debugging (security: only log prefix or if it's safe)
-        logger.warning("invalid_db_uri_attempt", uri_prefix=test_url[:15] if test_url else "empty")
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid URI. Must be a valid PostgreSQL URI (e.g. postgresql://...)"
-        )
-
-    # Save everything to config file for persistence
-    config_to_save = req.model_dump(exclude={"recreate"})
-    config_to_save["sqlalchemy_uri"] = test_url
-    config_to_save["last_operation"] = {"status": "pending", "type": "reset" if req.recreate else "setup"}
-    settings.save_config(config_to_save)
-
-    try:
-        init_db(test_url)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to initialize engine: {str(e)}")
-
-    env = os.environ.copy()
-    env["DATABASE_URL"] = test_url
-
-    async def run_setup_sequence(env_dict: dict, recreate: bool):
-        op_type = "reset" if recreate else "setup"
-        try:
-            if recreate:
-                logger.info("recreating_database_requested")
-                await drop_all_tables()
-
-            logger.info("creating_database_tables")
-            await create_all_tables()
-
-            logger.info("running_database_seeds")
-            subprocess.run(["python", "-m", "scripts.seed"], check=True, env=env_dict)
-
-            settings.save_config({"last_operation": {"status": "success", "type": op_type, "timestamp": datetime.now(timezone.utc).isoformat()}})
-            logger.info("database_setup_sequence_complete")
-        except Exception as e:
-            logger.error("database_setup_sequence_failed", error=str(e))
-            settings.save_config({
-                "last_operation": {
-                    "status": "error",
-                    "type": op_type,
-                    "message": str(e),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            })
-
-    background_tasks.add_task(run_setup_sequence, env, req.recreate)
     return APIResponse(
         status="success",
-        message="Database operation initiated.",
-        data={"db_configured": False, "reason": "initializing"}
+        data={
+            "db_configured": db_configured,
+            "inference_configured": inference_configured,
+            "inference_verified": inference_verified,
+            "inference_status": inference_status,
+            "embedding_configured": embedding_configured,
+            "embedding_verified": embedding_verified,
+            "embedding_status": embedding_status,
+            "configured": configured,
+            "ready": configured and db_configured and inference_verified and embedding_verified,
+            "reasons": reasons,
+            "last_op": _last_operation,
+            # Credentials are operator-managed now, so the UI needs to tell the
+            # user how to supply them rather than offering an input box.
+            "config_source": "environment",
+            "remediation": _remediation(reasons),
+        },
     )
+
+
+def _remediation(reasons: list[str]) -> str | None:
+    """The exact command an operator needs when required config is missing."""
+    if not reasons:
+        return None
+    return (
+        "kubectl -n meetings create secret generic meetings-runtime "
+        "--from-literal=DATABASE_URL=... "
+        "--from-literal=INFERENCE_ENDPOINT=... "
+        "--from-literal=INFERENCE_API_KEY=... "
+        "--from-literal=INFERENCE_MODEL_NAME=... "
+        "--from-literal=EMBEDDING_ENDPOINT=... "
+        "--from-literal=EMBEDDING_API_KEY=... "
+        "--from-literal=EMBEDDING_MODEL_NAME=... "
+        "--dry-run=client -o yaml | kubectl apply -f -"
+    )
+
+
+@router.post("/setup", response_model=APIResponse)
+async def run_setup(
+    background_tasks: BackgroundTasks,
+    reseed: bool = False,
+    session: AsyncSession = Depends(get_db_session),
+) -> APIResponse:
+    """Run migrations and seed reference data.
+
+    Schema changes are applied by Alembic, not ``Base.metadata.create_all``,
+    so upgrades are reviewable and repeatable.
+    """
+    global _last_operation
+
+    if not settings.DATABASE_URL:
+        return APIResponse(
+            status="error",
+            message="DATABASE_URL is not set. Configure the meetings-runtime Secret.",
+        )
+
+    _last_operation = {"status": "pending", "type": "reseed" if reseed else "setup"}
+    background_tasks.add_task(_run_setup_sequence, reseed)
+    return APIResponse(
+        status="success", message="Setup started.", data={"last_op": _last_operation}
+    )
+
+
+async def _run_setup_sequence(reseed: bool) -> None:
+    global _last_operation
+    op_type = "reseed" if reseed else "setup"
+    try:
+        await _run_migrations()
+
+        # Seeding is awaited in-process. It used to be
+        # subprocess.run(["python", "-m", "scripts.seed"], check=True) inside
+        # an async BackgroundTask, which blocked the event loop for the entire
+        # seed -- embedding network calls included -- and started a second
+        # process with its own database engine.
+        from scripts.seed import seed_data
+
+        await seed_data()
+
+        _last_operation = {
+            "status": "success",
+            "type": op_type,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        logger.info("setup_sequence_complete", type=op_type)
+    except Exception as exc:
+        logger.error("setup_sequence_failed", error=str(exc), type=op_type)
+        _last_operation = {
+            "status": "error",
+            "type": op_type,
+            "message": str(exc),
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+
+
+async def _run_migrations() -> None:
+    """Apply Alembic migrations without blocking the event loop."""
+
+    def _upgrade() -> None:
+        from alembic.config import Config
+
+        from alembic import command
+
+        cfg = Config("alembic.ini")
+        command.upgrade(cfg, "head")
+
+    logger.info("running_migrations")
+    await asyncio.to_thread(_upgrade)
+    logger.info("migrations_applied")

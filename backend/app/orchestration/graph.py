@@ -1,3 +1,4 @@
+from collections.abc import Hashable
 
 import structlog
 from langgraph.graph import END, START, StateGraph
@@ -8,6 +9,7 @@ from app.orchestration.state import MeetingState
 from app.orchestration.supervisor import supervisor_node
 
 logger = structlog.get_logger(__name__)
+
 
 def build_meeting_graph(attendees: dict[str, RoleAgent]) -> StateGraph:
     """Builds the supervisor-led StateGraph based on selected attendees."""
@@ -34,13 +36,11 @@ def build_meeting_graph(attendees: dict[str, RoleAgent]) -> StateGraph:
             return "FINISH"
         return next_speaker
 
-    valid_targets = {id: id for id in attendees.keys()}
+    # Keyed Hashable to match add_conditional_edges' signature. Note the old
+    # comprehension bound the loop variable to `id`, shadowing the builtin.
+    valid_targets: dict[Hashable, str] = {agent_id: agent_id for agent_id in attendees}
     valid_targets["FINISH"] = END
 
-    builder.add_conditional_edges(
-        "supervisor",
-        router,
-        valid_targets
-    )
+    builder.add_conditional_edges("supervisor", router, valid_targets)
 
     return builder

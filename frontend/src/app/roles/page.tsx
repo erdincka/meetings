@@ -95,7 +95,7 @@ export default function RolesPage() {
               <CardDescription className="text-muted-foreground font-semibold text-sm mt-3">{role.title}</CardDescription>
             </CardHeader>
             <CardContent className="flex-1 flex flex-col">
-              <p className="text-sm text-muted-foreground line-clamp-3 leading-relaxed mb-6 italic font-medium">"{role.summary}"</p>
+              <p className="text-sm text-muted-foreground line-clamp-3 leading-relaxed mb-6 italic font-medium">&ldquo;{role.summary}&rdquo;</p>
               
               <div className="mt-auto pt-6 border-t border-border space-y-4">
                  <div className="grid grid-cols-2 gap-4">
@@ -127,7 +127,9 @@ export default function RolesPage() {
         ))}
       </div>
 
-      <PersonaEditor 
+      <PersonaEditor
+        // Remount per persona so the form resets without an effect.
+        key={selectedRole?.id ?? "none"}
         role={selectedRole} 
         isOpen={isEditorOpen} 
         onClose={() => {

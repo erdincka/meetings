@@ -1,69 +1,61 @@
-from datetime import datetime
+"""Operator-tunable settings.
+
+Reads and writes the ``system_settings`` table. Credentials are NOT settable
+here -- they come from the environment (``meetings-runtime`` Secret) -- and
+``SystemSettingsUpdate`` forbids extra fields, so an attempt to set one is a
+422 rather than a silent no-op.
+"""
+
+from __future__ import annotations
 
 import httpx
 import structlog
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.database import get_db_session
+from app.core.network import normalize_v1_endpoint
 from app.domain.response import APIResponse
 from app.domain.settings import (
     SettingsDiscoveryRequest,
-    SystemSettingsBase,
+    SystemSettingsResponse,
     SystemSettingsUpdate,
 )
 from app.orchestration.prompts import PROMPT_METADATA
+from app.services import settings_service
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
 
+
 @router.get("", response_model=APIResponse)
-async def get_settings() -> APIResponse:
-    logger.info("fetch_settings_requested")
-
-    # Load from file
-    config = settings._load_config_file()
-
-    # Merge with defaults from SystemSettingsBase
-    defaults = SystemSettingsBase().model_dump()
-
-    # Extract only relevant fields for SystemSettingsResponse
-    current_settings = {**defaults, **config}
-
-    # Ensure id and timestamps are present for SystemSettingsResponse compatibility
-    if "id" not in current_settings: current_settings["id"] = 1
-    if "created_at" not in current_settings: current_settings["created_at"] = datetime.now()
-    if "updated_at" not in current_settings: current_settings["updated_at"] = datetime.now()
-
+async def get_settings(session: AsyncSession = Depends(get_db_session)) -> APIResponse:
+    row = await settings_service.get_settings_row(session)
     return APIResponse(
         status="success",
-        data=current_settings
+        data=SystemSettingsResponse.model_validate(row).model_dump(),
     )
+
 
 @router.patch("", response_model=APIResponse)
 async def update_settings(
-    settings_data: SystemSettingsUpdate
+    payload: SystemSettingsUpdate,
+    session: AsyncSession = Depends(get_db_session),
 ) -> APIResponse:
-    logger.info("update_settings_requested")
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=400, detail="No fields supplied")
 
-    update_dict = settings_data.model_dump(exclude_unset=True)
-    settings.save_config(update_dict)
-
-    # Reload and return
-    config = settings._load_config_file()
-    defaults = SystemSettingsBase().model_dump()
-    current_settings = {**defaults, **config}
-
-    if "id" not in current_settings: current_settings["id"] = 1
-    if "created_at" not in current_settings: current_settings["created_at"] = datetime.now()
-    if "updated_at" not in current_settings: current_settings["updated_at"] = datetime.now()
+    try:
+        row = await settings_service.update_tunables(session, changes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return APIResponse(
         status="success",
-        data=current_settings
+        data=SystemSettingsResponse.model_validate(row).model_dump(),
     )
 
-
-from app.core.network import normalize_v1_endpoint
 
 @router.post("/discover", response_model=APIResponse)
 async def discover_models(req: SettingsDiscoveryRequest) -> APIResponse:
@@ -84,37 +76,47 @@ async def discover_models(req: SettingsDiscoveryRequest) -> APIResponse:
                 # 2. Key-based list: {"models": [...], "results": [...]}
                 # 3. Simple list: [...]
                 if isinstance(data, dict):
-                    models = data.get("data") or data.get("models") # Look for known keys
+                    models = data.get("data") or data.get("models")  # Look for known keys
                     if models is None:
-                        # Fallback: if 'data' is a dict but no known key, maybe the dict itself is a model?
-                        # Or it's a format we don't know - return it as is but wrap in list if it looks like one.
+                        # Unknown shape: hand it back as-is rather than guessing.
                         models = data
                 else:
                     models = data
 
-                logger.info("discovery_success", count=len(models) if isinstance(models, list) else "unknown")
+                logger.info(
+                    "discovery_success",
+                    count=len(models) if isinstance(models, list) else "unknown",
+                )
                 return APIResponse(status="success", data={"models": models})
             else:
                 error_msg = f"Endpoint returned status {resp.status_code}: {resp.text[:100]}"
-                logger.warning("discovery_endpoint_error", status=resp.status_code, text=resp.text[:100])
+                logger.warning(
+                    "discovery_endpoint_error", status=resp.status_code, text=resp.text[:100]
+                )
                 return APIResponse(
-                    status="error",
-                    message=error_msg,
-                    data={"models": [], "error": error_msg}
+                    status="error", message=error_msg, data={"models": [], "error": error_msg}
                 )
     except httpx.ConnectError:
-        error_msg = f"Discovery failed: Could not connect to {url}. Check if the service is running."
-        return APIResponse(status="error", message=error_msg, data={"models": [], "error": error_msg})
+        error_msg = (
+            f"Discovery failed: Could not connect to {url}. Check if the service is running."
+        )
+        return APIResponse(
+            status="error", message=error_msg, data={"models": [], "error": error_msg}
+        )
     except httpx.TimeoutException:
         error_msg = f"Discovery failed: Request to {url} timed out after 10s."
-        return APIResponse(status="error", message=error_msg, data={"models": [], "error": error_msg})
+        return APIResponse(
+            status="error", message=error_msg, data={"models": [], "error": error_msg}
+        )
     except Exception as e:
         logger.error("discovery_failed", error=str(e))
         error_msg = f"Discovery failed: {str(e)}"
-        return APIResponse(status="error", message=error_msg, data={"models": [], "error": error_msg})
+        return APIResponse(
+            status="error", message=error_msg, data={"models": [], "error": error_msg}
+        )
+
 
 @router.get("/prompts/metadata", response_model=APIResponse)
 async def get_prompt_metadata() -> APIResponse:
     """Returns metadata for all configurable prompts, including defaults and placeholders."""
     return APIResponse(status="success", data=PROMPT_METADATA)
-

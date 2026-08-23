@@ -1,61 +1,39 @@
 # -*- mode: Python -*-
-# Tiltfile for Meeting Simulator
+# Inner dev loop against the local kind cluster.
+#
+# Replaces the previous Tiltfile, which targeted the rancher-desktop k3s
+# context and pushed to an HPE PCAI registry. The cluster is now kind with
+# gVisor-backed Agent Sandbox; see deploy/kind/cluster.yaml and the Makefile.
 
-# Load .env file
-load('ext://dotenv', 'dotenv')
-dotenv()
+allow_k8s_contexts('kind-meetings')
 
-# Configuration
-# Prerequisite: rancher-desktop context
-allow_k8s_contexts(os.environ['KUBE_CONTEXT'])
-default_registry('registry.' + os.environ['DOMAIN'])
-
-# Global namespace - standardise on 'dev'
-namespace = 'dev'
-
-# 1. Backend Build & Live Update
+# kind loads images directly from the daemon -- no registry round trip needed.
 docker_build(
     'meetings-backend',
     './backend',
     dockerfile='./backend/Dockerfile',
-    # Enable live updates to avoid full rebuilds
     live_update=[
         sync('./backend/app', '/app/app'),
         sync('./backend/scripts', '/app/scripts'),
-        # Re-sync dependencies if locked files change
-        run('uv sync --frozen --no-dev', trigger=['./backend/pyproject.toml', './backend/uv.lock']),
-    ]
+        run('uv sync --frozen --no-dev',
+            trigger=['./backend/pyproject.toml', './backend/uv.lock']),
+    ],
 )
 
-# 2. Frontend Build
-# Note: Next.js standalone build is complex for live update in Tilt.
-# For now, we perform full builds or assume simple sync.
 docker_build(
     'meetings-frontend',
     './frontend',
     dockerfile='./frontend/Dockerfile',
-    # Enable live updates for frontend hot-reload
     live_update=[
         sync('./frontend', '/app'),
-        # Re-install dependencies if lock files change
-        run('npm ci', trigger=['./frontend/package.json', './frontend/package-lock.json']),
-    ]
+        run('npm ci',
+            trigger=['./frontend/package.json', './frontend/package-lock.json']),
+    ],
 )
 
-# 3. Helm Chart Deployment
-# We deploy the entire chart into the 'dev' namespace.
-# We set image paths to the images built by Tilt.
-helm_yaml = helm(
-    './helm',
-    name='meetings',
-    namespace=namespace,
-    set=[
-        'ezua.virtualService.endpoint=meetings.' + os.environ['DOMAIN'],
-        'global.env=development',
-        'backend.image=registry.' + os.environ['DOMAIN'] + '/meetings-backend:latest',
-        'frontend.image=registry.' + os.environ['DOMAIN'] + '/meetings-frontend:latest',
-    ]
-)
+# The persona runtime image is added in Phase 2 (sandbox/runtime).
+# The exec-python and policy images are added in Phase 3.
 
-# 4. Deploy to Kubernetes
-k8s_yaml(helm_yaml)
+# App chart lands in Phase 1 at deploy/charts/meetings. Until then the platform
+# is brought up with `make kind-up`, which is authoritative for the cluster.
+# k8s_yaml(helm('./deploy/charts/meetings', name='meetings', namespace='meetings'))

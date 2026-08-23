@@ -1,80 +1,121 @@
+"""Embedding generation against an OpenAI-compatible endpoint.
 
-from typing import Optional
+Some embedding models are *asymmetric*: they require an ``input_type`` telling
+them whether the text is a document being indexed or a query being matched.
+There is no capability endpoint for this, so the first call that fails with a
+"input_type required" error records the fact and retries. The result is cached
+per (endpoint, model) for the process lifetime.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 import structlog
 from langchain_openai import OpenAIEmbeddings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger(__name__)
 
-# (base_url, model_name) -> bool (True if asymmetric/requires input_type)
-_ASYMMETRIC_REGISTRY: dict[tuple[str, str], bool] = {}
+# (base_url, model_name) -> True when the model requires input_type.
+_ASYMMETRIC_REGISTRY: dict[tuple[str | None, str | None], bool] = {}
 
-async def get_embedding_model(input_type: Optional[str] = None) -> OpenAIEmbeddings:
+
+def _embedding_config() -> tuple[str | None, str | None, str | None, bool]:
+    """Embedding endpoint config, straight from the environment.
+
+    No database session needed: embedding credentials are env-only, which
+    keeps the many call sites simple.
+    """
     from app.core.config import settings
-    system_settings = settings.get_system_settings()
+    from app.core.network import normalize_v1_endpoint
 
-    base_url = system_settings.embedding_endpoint
-    api_key = system_settings.embedding_api_key
-    model_name = system_settings.embedding_model_name
+    endpoint = (
+        normalize_v1_endpoint(settings.EMBEDDING_ENDPOINT) if settings.EMBEDDING_ENDPOINT else None
+    )
+    return (
+        endpoint,
+        settings.EMBEDDING_API_KEY,
+        settings.EMBEDDING_MODEL_NAME,
+        settings.EMBEDDING_IGNORE_TLS,
+    )
 
-    embeddings_params = {
+
+async def get_embedding_model(input_type: str | None = None) -> OpenAIEmbeddings:
+    base_url, api_key, model_name, ignore_tls = _embedding_config()
+
+    params: dict[str, Any] = {
         "openai_api_base": base_url,
         "openai_api_key": api_key,
         "model": model_name,
         "check_embedding_ctx_length": False,
-        "request_timeout": 30
+        "request_timeout": 30,
     }
 
-    # Inject input_type if we've detected this model requires it
-    is_asymmetric = _ASYMMETRIC_REGISTRY.get((base_url, model_name), False)
-    if is_asymmetric and input_type:
-        embeddings_params["model_kwargs"] = {"extra_body": {"input_type": input_type}}
+    if _ASYMMETRIC_REGISTRY.get((base_url, model_name), False) and input_type:
+        params["model_kwargs"] = {"extra_body": {"input_type": input_type}}
 
-    if system_settings.embedding_ignore_tls:
+    if ignore_tls:
         from app.core.network import get_http_client, get_sync_http_client
-        embeddings_params["http_client"] = get_sync_http_client(ignore_tls=True)
-        embeddings_params["http_async_client"] = get_http_client(ignore_tls=True)
 
-    return OpenAIEmbeddings(**embeddings_params)
+        params["http_client"] = get_sync_http_client(ignore_tls=True)
+        params["http_async_client"] = get_http_client(ignore_tls=True)
 
-async def _wrap_embedding_call(
-    func: callable,
-    texts: list[str] | str,
+    return OpenAIEmbeddings(**params)
+
+
+def _is_missing_input_type_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "input_type" in message and "required" in message
+
+
+async def _wrap_embedding_call[T](
+    func: Callable[[OpenAIEmbeddings, T], Awaitable[Any]],
+    texts: T,
     input_type: str,
-    *args,
-    **kwargs
-) -> any:
-    """Wrapper that detects if input_type is required and retries if so."""
-    from app.core.config import settings
-    ss = settings.get_system_settings()
-    key = (ss.embedding_endpoint, ss.embedding_model_name)
+) -> Any:
+    """Call ``func``, learning the model's asymmetry from a first failure."""
+    base_url, _api_key, model_name, _ignore_tls = _embedding_config()
+    key = (base_url, model_name)
 
-    # 1. Try with current registered capability
     try:
         model = await get_embedding_model(input_type=input_type)
-        return await func(model, texts, *args, **kwargs)
-    except Exception as e:
-        error_str = str(e).lower()
-        # Detect if we missed input_type for an asymmetric model
-        if "input_type" in error_str and "required" in error_str and not _ASYMMETRIC_REGISTRY.get(key):
-            logger.info("asymmetric_model_detected", model_name=ss.embedding_model_name)
+        return await func(model, texts)
+    except Exception as exc:
+        if _is_missing_input_type_error(exc) and not _ASYMMETRIC_REGISTRY.get(key):
+            logger.info("asymmetric_model_detected", model_name=model_name)
             _ASYMMETRIC_REGISTRY[key] = True
             model = await get_embedding_model(input_type=input_type)
-            return await func(model, texts, *args, **kwargs)
+            return await func(model, texts)
         raise
 
-async def generate_embeddings(texts: list[str], session: Optional[AsyncSession] = None) -> list[list[float]]:
+
+async def generate_embeddings(
+    texts: list[str], session: AsyncSession | None = None
+) -> list[list[float]]:
+    """Embed documents for indexing."""
+
+    async def _call(model: OpenAIEmbeddings, batch: list[str]) -> list[list[float]]:
+        return await model.aembed_documents(batch)
+
     try:
-        async def _call(model, t): return await model.aembed_documents(t)
-        return await _wrap_embedding_call(_call, texts, input_type="passage")
-    except Exception as e:
-        logger.error("embedding_generation_failed", error=str(e))
+        result: list[list[float]] = await _wrap_embedding_call(_call, texts, input_type="passage")
+        return result
+    except Exception as exc:
+        logger.error("embedding_generation_failed", error=str(exc))
         raise
 
-async def generate_embedding(text: str, session: Optional[AsyncSession] = None) -> list[float]:
+
+async def generate_embedding(text: str, session: AsyncSession | None = None) -> list[float]:
+    """Embed a single query."""
+
+    async def _call(model: OpenAIEmbeddings, value: str) -> list[float]:
+        return await model.aembed_query(value)
+
     try:
-        async def _call(model, t): return await model.aembed_query(t)
-        return await _wrap_embedding_call(_call, text, input_type="query")
-    except Exception as e:
-        logger.error("single_embedding_generation_failed", error=str(e))
+        result: list[float] = await _wrap_embedding_call(_call, text, input_type="query")
+        return result
+    except Exception as exc:
+        logger.error("single_embedding_generation_failed", error=str(exc))
         raise

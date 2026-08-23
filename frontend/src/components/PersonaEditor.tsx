@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiClient } from "@/lib/api-client"
 import { 
@@ -55,27 +55,33 @@ const COLLABORATION_OPTIONS = ["Direct", "Consultative", "Democratic", "Collabor
 const CHALLENGE_OPTIONS = ["Analytical", "Provocative", "Constructive", "Skeptical", "Questioning", "Supportive"];
 const TONE_OPTIONS = ["Professional", "Authoritative", "Data-driven", "Supportive", "Direct", "Visionary", "Pragmatic", "Analytical", "Enthusiastic", "Diplomatic", "Critical", "Inspirational"];
 
+/** Tone has been stored as both a list and a comma-separated string. */
+function normalisePersona(role: Role | null | undefined): Partial<Role> {
+  if (!role) return {};
+  const incomingTone: unknown = role.tone;
+  const tone = Array.isArray(incomingTone)
+    ? (incomingTone as string[])
+    : (typeof incomingTone === "string" ? incomingTone : "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter((t) => t !== "");
+
+  return {
+    ...role,
+    responsibilities: role.responsibilities || [],
+    kpis: role.kpis || [],
+    priorities: role.priorities || [],
+    objectives: role.objectives || [],
+    tone,
+  };
+}
+
 export const PersonaEditor = ({ role, isOpen, onClose }: PersonaEditorProps) => {
   const queryClient = useQueryClient();
-  const [formData, setFormData] = useState<Partial<Role>>({});
-
-  useEffect(() => {
-    if (role) {
-      const incomingTone = (role as any).tone;
-      const initialTone = Array.isArray(incomingTone) 
-        ? incomingTone 
-        : (typeof incomingTone === 'string' ? incomingTone : "").split(",").map((t: string) => t.trim()).filter((t: string) => t !== "");
-
-      setFormData({
-        ...role,
-        responsibilities: role.responsibilities || [],
-        kpis: role.kpis || [],
-        priorities: role.priorities || [],
-        objectives: role.objectives || [],
-        tone: initialTone,
-      });
-    }
-  }, [role]);
+  // Derived once from the prop rather than copied in via an effect, which
+  // caused a cascading re-render on every open. The caller remounts this with
+  // key={role.id}, so switching persona resets the form.
+  const [formData, setFormData] = useState<Partial<Role>>(() => normalisePersona(role));
 
   const mutation = useMutation({
     mutationFn: async (updatedRole: Partial<Role>) => {
@@ -216,7 +222,7 @@ export const PersonaEditor = ({ role, isOpen, onClose }: PersonaEditorProps) => 
                <div className="space-y-6">
                   <div className="bg-primary/[0.08] border border-primary/20 rounded-xl p-5 flex gap-4 text-[13px] text-foreground/80 leading-relaxed shadow-inner font-medium">
                     <Info className="h-5 w-5 text-primary shrink-0 mt-0.5" />
-                    These behavioral parameters influence how the agent interacts with other personas in a meeting. They define the "social persona" within a discussion.
+                    These behavioral parameters influence how the agent interacts with other personas in a meeting. They define the &ldquo;social persona&rdquo; within a discussion.
                   </div>
                   <div className="grid grid-cols-2 gap-8">
                     <div className="space-y-3">
@@ -301,7 +307,7 @@ export const PersonaEditor = ({ role, isOpen, onClose }: PersonaEditorProps) => 
             <TabsContent value="prompt" className="space-y-6 mt-0">
                <div className="bg-primary/[0.08] border border-primary/20 rounded-xl p-5 flex gap-4 text-[13px] text-foreground/80 leading-relaxed shadow-inner font-medium">
                   <Info className="h-5 w-5 text-primary shrink-0 mt-0.5" />
-                  This prompt defines the "internal logic" and departmental bias of the AI agent. It is hidden from other agents during the simulation.
+                  This prompt defines the &ldquo;internal logic&rdquo; and departmental bias of the AI agent. It is hidden from other agents during the simulation.
                </div>
                <div className="space-y-3">
                 <div className="flex justify-between items-center">

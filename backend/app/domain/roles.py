@@ -36,6 +36,7 @@ class RoleAgentBase(BaseModel):
             if v_stripped.startswith("[") and v_stripped.endswith("]"):
                 try:
                     import json
+
                     parsed = json.loads(v_stripped)
                     if isinstance(parsed, list):
                         return [str(item) for item in parsed]
@@ -44,8 +45,10 @@ class RoleAgentBase(BaseModel):
             return [t.strip() for t in v.split(",") if t.strip()]
         return v or []
 
+
 class RoleAgentCreate(RoleAgentBase):
     pass
+
 
 class RoleAgentUpdate(BaseModel):
     display_name: str | None = None
@@ -69,6 +72,7 @@ class RoleAgentUpdate(BaseModel):
     system_prompt: str | None = None
     default_tools: list[str] | None = None
     ui_metadata: dict[str, Any] | None = None
+
 
 class RoleAgentResponse(RoleAgentBase):
     id: UUID

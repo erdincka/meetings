@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "meetings.name" . }}-backend
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  # Recreate, not RollingUpdate: two backends must never run concurrently
+  # while the active-meeting registry is process-local.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "meetings.name" . }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "meetings.name" . }}
+        app.kubernetes.io/component: backend
+      annotations:
+        # Restart on config change so a settings edit actually takes effect.
+        checksum/config: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+    spec:
+      securityContext: {{- include "meetings.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: backend
+          image: {{ include "meetings.image" (dict "registry" .Values.image.registry "image" .Values.backend.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "meetings.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            # Taken whole from the CNPG-generated Secret. app.core.config
+            # coerces the postgresql:// scheme to postgresql+asyncpg://.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+            {{- if ne .Values.inference.mode "ollama" }}
+            - name: INFERENCE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.inference.existingSecret }}
+                  key: {{ .Values.inference.apiKeyKey }}
+                  optional: true
+            - name: EMBEDDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.inference.existingSecret }}
+                  key: {{ .Values.inference.embeddingApiKeyKey }}
+                  optional: true
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "meetings.name" . }}-config
+          # readOnlyRootFilesystem is on, so anything that writes needs a mount.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          # Three distinct probes. /health is liveness only and does no I/O;
+          # /readyz checks the database, so a backend that loses Postgres
+          # leaves the rotation instead of being killed and restarted.
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources: {{- toYaml .Values.backend.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "meetings.name" . }}-backend
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "meetings.name" . }}
+    app.kubernetes.io/component: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

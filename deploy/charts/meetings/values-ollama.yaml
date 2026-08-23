@@ -1,0 +1,16 @@
+# Fully local inference: no API key, nothing leaves the cluster.
+#
+# Trade-off: a resident model competes with sandbox warm pools for memory.
+# On a 12GB VM keep the model small and cap meetings at ~3 attendees.
+inference:
+  mode: ollama
+  embedding:
+    modelName: nomic-embed-text
+    dimensions: 768
+
+ollama:
+  enabled: true
+  model: qwen3:4b
+
+image:
+  pullPolicy: Never

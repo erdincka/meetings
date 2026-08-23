@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -15,12 +15,19 @@ from app.core.config import settings
 from app.models.meetings import Meeting
 from app.models.roles import RoleAgent
 from app.orchestration.graph import build_meeting_graph
+from app.services.settings_service import get_runtime_settings
 
 logger = structlog.get_logger(__name__)
 
-async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any], None]:
+
+def _now_iso() -> str:
+    """UTC timestamp in the Z-suffixed form the frontend expects."""
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any]]:
     """Runs a meeting session using a StateGraph and yields serializable UI events."""
-    async with database.async_session_maker() as session:
+    async with database.require_session_maker()() as session:
         # 1. Fetch & Validate Simulation Target
         meeting_uuid = UUID(meeting_id)
         query = select(Meeting).where(Meeting.id == meeting_uuid)
@@ -31,18 +38,18 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
             yield {
                 "type": "error",
                 "content": "Simulation target unreachable or invalid status.",
-                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                "timestamp": _now_iso(),
             }
             return
 
         # 2. Transition State
         meeting.status = "running"
-        yield {"type": "meeting_started", "meeting_id": meeting_id, "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+        yield {"type": "meeting_started", "meeting_id": meeting_id, "timestamp": _now_iso()}
 
         # 3. Configure Orchestration
         attendee_query = select(RoleAgent).where(RoleAgent.id.in_(meeting.selected_attendee_ids))
         attendees = {str(r.id): r for r in (await session.execute(attendee_query)).scalars().all()}
-        system_settings = settings.get_system_settings()
+        system_settings = await get_runtime_settings(session)
 
         graph = build_meeting_graph(attendees)
 
@@ -51,10 +58,11 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
             "brief": meeting.brief or "",
             "agenda": meeting.agenda or "",
             "objective": meeting.objective or "",
-            "turn_limit": meeting.turn_limit or 50,
+            "expectations": meeting.expectations or "",
+            "turn_limit": meeting.turn_limit or system_settings.default_turn_limit,
             "current_turn": meeting.current_turn or 0,
             "messages": [],
-            "event_log": []
+            "event_log": [],
         }
 
         thread_config = {
@@ -62,13 +70,13 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
                 "thread_id": meeting_id,
                 "model_settings": system_settings,
                 "app_settings": system_settings,
-                "attendees": attendees
+                "attendees": attendees,
             }
         }
 
         # 4. Resolve Persistent Checkpointer
         pg_url = settings.DATABASE_URL.replace("+asyncpg", "") if settings.DATABASE_URL else None
-        
+
         async def _execute_with_checkpointer(cp: Any):
             """Executes graph with provided checkpointer and yields events."""
             app_graph = graph.compile(checkpointer=cp)
@@ -79,51 +87,93 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
             async for event in _stream_graph(app_graph, initial_state, thread_config, meeting_id):
                 if event.get("type") == "error":
                     has_error = True
-                
+
                 accumulated_events.append(event)
                 if event.get("is_conclusion") and event.get("reasoning"):
                     final_summary = event.get("reasoning")
-                
+
                 yield event
 
             # Persistence layer update
             await _update_meeting_status(
-                meeting_id, 
-                "failed" if has_error else "completed", 
+                meeting_id,
+                "failed" if has_error else "completed",
                 event_log=accumulated_events,
-                final_summary=final_summary
+                final_summary=final_summary,
             )
-            
-            if not has_error:
-                yield {"type": "meeting_completed", "meeting_id": meeting_id, "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
-        # Entry logic: Attempt PG for durability, fallback to Memory for availability
+            if not has_error:
+                yield {
+                    "type": "meeting_completed",
+                    "meeting_id": meeting_id,
+                    "timestamp": _now_iso(),
+                }
+
+        # Durable checkpointing is required unless explicitly waived.
+        #
+        # This block used to swallow every exception and fall through to an
+        # in-memory saver while logging only a warning. The meeting then ran
+        # with no durability at all -- a backend restart lost it -- and nothing
+        # in the API or UI indicated that had happened. Silent downgrades of a
+        # durability guarantee are worse than a hard failure, so it now raises
+        # unless ALLOW_VOLATILE_CHECKPOINTS is set for local development.
         if pg_url:
             try:
-                logger.info("attempting_durable_checkpoint_initialisation", meeting_id=meeting_id)
-                async with AsyncConnectionPool(pg_url, max_size=5, kwargs={"autocommit": True}) as pool:
-                    checkpointer = AsyncPostgresSaver(pool)
-                    async with asyncio.timeout(5):
+                async with AsyncConnectionPool(
+                    pg_url, max_size=5, kwargs={"autocommit": True}
+                ) as pool:
+                    # AsyncPostgresSaver declares a dict row factory; the pool is
+                    # created with psycopg's default tuple factory. The saver sets
+                    # its own row factory per cursor, so this is safe at runtime.
+                    checkpointer = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
+                    async with asyncio.timeout(10):
                         await checkpointer.setup()
-                    
+
                     logger.info("durable_checkpoint_active", meeting_id=meeting_id)
                     async for event in _execute_with_checkpointer(checkpointer):
                         yield event
                     return
-            except Exception as e:
-                logger.warning("durable_checkpoint_failed_falling_back", error=str(e), meeting_id=meeting_id)
+            except Exception as exc:
+                if not settings.ALLOW_VOLATILE_CHECKPOINTS:
+                    logger.error(
+                        "durable_checkpoint_unavailable",
+                        error=str(exc),
+                        meeting_id=meeting_id,
+                    )
+                    await _update_meeting_status(meeting_id, "failed")
+                    yield {
+                        "type": "error",
+                        "content": (
+                            "Durable checkpointing is unavailable, so this meeting "
+                            "cannot be recovered if the backend restarts. Refusing to "
+                            "run. Set ALLOW_VOLATILE_CHECKPOINTS=true to override in "
+                            f"development. Cause: {exc}"
+                        ),
+                        "timestamp": _now_iso(),
+                    }
+                    return
+                logger.warning(
+                    "durable_checkpoint_failed_volatile_override_active",
+                    error=str(exc),
+                    meeting_id=meeting_id,
+                )
+        elif not settings.ALLOW_VOLATILE_CHECKPOINTS:
+            await _update_meeting_status(meeting_id, "failed")
+            yield {
+                "type": "error",
+                "content": "DATABASE_URL is not set, so no durable checkpointer is available.",
+                "timestamp": _now_iso(),
+            }
+            return
 
-        # Volatile Fallback
-        logger.info("activating_volatile_memory_checkpointer", meeting_id=meeting_id)
+        logger.warning("using_volatile_checkpointer", meeting_id=meeting_id)
         async for event in _execute_with_checkpointer(MemorySaver()):
             yield event
 
+
 async def _stream_graph(
-    app_graph: Any,
-    initial_state: dict[str, Any],
-    thread_config: dict[str, Any],
-    meeting_id: str
-) -> AsyncGenerator[dict[str, Any], None]:
+    app_graph: Any, initial_state: dict[str, Any], thread_config: dict[str, Any], meeting_id: str
+) -> AsyncGenerator[dict[str, Any]]:
     """Streams orchestration updates and yields serializable events."""
     logger.info("astream_execution_starting", meeting_id=meeting_id)
     try:
@@ -134,7 +184,7 @@ async def _stream_graph(
                 if "event_log" in state_update and state_update["event_log"]:
                     for e in state_update["event_log"]:
                         if "timestamp" not in e:
-                            e["timestamp"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                            e["timestamp"] = _now_iso()
                         yield e
 
                 if node_name == "supervisor":
@@ -144,12 +194,13 @@ async def _stream_graph(
                             "type": "supervisor_selected_next_agent",
                             "agent_id": next_spk,
                             "reasoning": state_update.get("reasoning"),
-                            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                            "timestamp": _now_iso(),
                         }
                 elif node_name == "__start__":
                     continue
                 else:
-                    # Clear typing status for a finished agent turn handled naturally by agent_spoke yield above
+                    # Typing status clears naturally via the agent_spoke
+                    # yield above.
                     pass
 
     except Exception as e:
@@ -157,21 +208,34 @@ async def _stream_graph(
         yield {
             "type": "error",
             "content": f"Nexus Runtime Exception: {str(e)}",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            "timestamp": _now_iso(),
         }
 
-async def _update_meeting_status(meeting_id: str, status: str, event_log: list[dict[str, Any]] | None = None, final_summary: str | None = None) -> None:
+
+async def _update_meeting_status(
+    meeting_id: str,
+    status: str,
+    event_log: list[dict[str, Any]] | None = None,
+    final_summary: str | None = None,
+) -> None:
     """Synchronizes simulation results with the persistent layer."""
     assert database.async_session_maker is not None
-    async with database.async_session_maker() as session:
+    async with database.require_session_maker()() as session:
         query = select(Meeting).where(Meeting.id == UUID(meeting_id))
         meeting = (await session.execute(query)).scalar_one_or_none()
         if meeting:
             meeting.status = status
             if event_log is not None:
-                logger.info("persisting_telemetry_logs", meeting_id=meeting_id, count=len(event_log))
+                logger.info(
+                    "persisting_telemetry_logs", meeting_id=meeting_id, count=len(event_log)
+                )
                 meeting.meeting_log = event_log
             if final_summary is not None:
                 meeting.final_summary = final_summary
             await session.commit()
-            logger.info("simulation_state_persisted", meeting_id=meeting_id, status=status, log_size=len(event_log) if event_log else 0)
+            logger.info(
+                "simulation_state_persisted",
+                meeting_id=meeting_id,
+                status=status,
+                log_size=len(event_log) if event_log else 0,
+            )

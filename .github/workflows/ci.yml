@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Settings are read from the environment at import, so lint/test runs need
+  # deterministic values rather than whatever the runner happens to have.
+  DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/test
+  INFERENCE_ENDPOINT: http://inference.test/v1
+  INFERENCE_MODEL_NAME: test-model
+  EMBEDDING_ENDPOINT: http://embedding.test/v1
+  EMBEDDING_MODEL_NAME: test-embed
+
+jobs:
+  backend:
+    name: backend (lint, types, tests)
+    runs-on: ubuntu-latest
+    # A real Postgres with pgvector, so the migration and drift checks below
+    # exercise the actual schema rather than being skipped.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups --frozen
+
+      - name: ruff check
+        run: uv run ruff check app scripts tests
+
+      - name: ruff format
+        run: uv run ruff format --check app scripts tests alembic
+
+      # mypy ratchets per-package (see [[tool.mypy.overrides]]) rather than
+      # flipping strict on a codebase that has never been type-checked, where
+      # hundreds of findings would drown out the real ones.
+      - name: mypy
+        run: uv run mypy app
+
+      # The floor locks in current coverage so it cannot regress. It is
+      # deliberately low: unit tests cover the pure logic extracted in Phase 1
+      # (model-output recovery, config parsing, settings contract), while most
+      # remaining code is I/O-bound route and orchestration work. Phase 2's
+      # fake-sandbox integration harness is what raises this materially.
+      - name: pytest
+        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing --cov-fail-under=8
+
+      - name: alembic upgrade
+        run: uv run alembic upgrade head
+
+      # Fails if the ORM has drifted from the migrations -- the exact problem
+      # that surfaced when the models moved to typed declarative.
+      - name: alembic drift check
+        run: uv run alembic check
+
+  frontend:
+    name: frontend (lint, types)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - name: tsc
+        run: npx tsc --noEmit
+
+  charts:
+    name: charts (lint, schema)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v5
+      - name: helm lint
+        run: helm lint deploy/charts/meetings
+
+      - name: install kubeconform
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      # Renders every values profile and validates against real API schemas,
+      # including the Gateway API CRDs.
+      - name: kubeconform
+        run: |
+          for f in values.yaml values-local.yaml values-ollama.yaml; do
+            echo "::group::$f"
+            helm template meetings deploy/charts/meetings -n meetings \
+              -f "deploy/charts/meetings/$f" \
+            | kubeconform -strict -summary -kubernetes-version 1.36.1 \
+                -schema-location default \
+                -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+            echo "::endgroup::"
+          done
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: |
+          version=$(curl -sSfL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | sed -nE 's/.*"tag_name": "v([^"]+)".*/\1/p' | head -1)
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks detect --source . --redact --no-banner --exit-code 1
+      # Run from the published image rather than the action. The action
+      # downloads a binary at run time and failed with a TLS error (curl 35),
+      # and a flaky download is a poor foundation for the one job whose purpose
+      # is supply-chain hygiene. Suppressions live in .trivyignore, justified
+      # individually.
+      - name: trivy filesystem scan
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src aquasec/trivy:latest fs \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --scanners vuln,secret,misconfig \
+            --no-progress \
+            .

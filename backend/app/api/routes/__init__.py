@@ -9,5 +9,3 @@ api_router.include_router(templates.router, prefix="/templates", tags=["template
 api_router.include_router(documents.router, prefix="/documents", tags=["documents"])
 api_router.include_router(meetings.router, prefix="/meetings", tags=["meetings"])
 api_router.include_router(system.router, prefix="/system", tags=["system"])
-
-

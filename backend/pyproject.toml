@@ -1,27 +1,26 @@
 [project]
-name = "backend"
-version = "0.1.0"
-description = "Add your description here"
+name = "meetings-backend"
+version = "0.2.0"
+description = "Agentic Meetings backend: LangGraph orchestration over Kubernetes Agent Sandbox"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.14.0",
     "asyncpg>=0.31.0",
-    "email-validator>=2.3.0",
-
     "fastapi>=0.135.2",
+    "greenlet>=3.1.0",
     "httpx>=0.28.1",
+    "k8s-agent-sandbox>=0.5.6",
     "langchain>=1.2.14",
     "langchain-openai>=1.1.12",
     "langchain-text-splitters>=1.1.1",
     "langgraph>=1.1.4",
     "langgraph-checkpoint-postgres>=3.0.5",
-    "passlib[bcrypt]>=1.7.4",
     "pgvector>=0.4.2",
     "psycopg[binary]>=3.3.3",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
     "pypdf>=6.9.2",
-    "python-jose[cryptography]>=3.5.0",
     "python-multipart>=0.0.22",
     "sqlalchemy>=2.0.48",
     "structlog>=25.5.0",
@@ -29,21 +28,63 @@ dependencies = [
     "websockets>=16.0",
 ]
 
+# Removed in Phase 1:
+#   email-validator          - never imported
+#   passlib[bcrypt]          - no auth code existed; operator auth lands in Phase 6
+#   python-jose[cryptography]- ditto
+
 [dependency-groups]
 dev = [
     "mypy>=1.20.0",
     "pytest>=9.0.2",
+    "pytest-asyncio>=1.0.0",
+    "pytest-cov>=6.0.0",
     "ruff>=0.15.8",
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py313"
+extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "C", "B", "UP"]
-ignore = []
+ignore = [
+    # Depends()/Query() in a default argument is the FastAPI idiom, not a bug.
+    "B008",
+]
+
+[tool.ruff.lint.mccabe]
+# Several orchestration functions are genuinely branchy. 15 holds the current
+# worst case; tighten as meeting_executor and supervisor are refactored.
+max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+# Seed data is long prose literals; wrapping them hurts readability.
+"scripts/seed.py" = ["E501"]
+# Prompt text is data. Re-wrapping it would silently change what the model sees.
+"app/orchestration/prompts.py" = ["E501"]
 
 [tool.mypy]
-strict = true
+python_version = "3.13"
 ignore_missing_imports = true
+warn_unused_configs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+# Ratcheting toward strict rather than flipping it on wholesale: the codebase
+# has never been type-checked, so blanket strict produces hundreds of errors
+# that drown out real ones. Modules are tightened as they are rewritten.
+disallow_untyped_defs = false
+exclude = ["alembic/"]
+
+[[tool.mypy.overrides]]
+module = ["app.core.*", "app.domain.*", "app.services.settings_service"]
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"
+markers = [
+    "integration: requires a live Postgres (testcontainers)",
+]

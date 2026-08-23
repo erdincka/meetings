@@ -6,50 +6,23 @@ import { apiClient } from "@/lib/api-client"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
 import { toast } from "sonner"
 import { 
   Plus, 
   Users, 
-  Target, 
-  FileText, 
   Trash2, 
-  Play, 
-  Settings, 
   History as HistoryIcon, 
-  Check, 
-  ChevronRight,
-  TrendingUp,
-  Briefcase,
   AlertCircle,
   Loader2,
   PlayCircle
 } from "lucide-react"
 import AddDocDialog from "@/components/shared/AddDocDialog"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog'
-import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { useRef, useMemo, useEffect } from "react"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { useMemo } from "react"
 
-interface Role {
-  id: string;
-  display_name: string;
-  title: string;
-  department: string;
-}
-
-interface Template {
-  id: string;
-  name: string;
-  brief: string;
-  agenda: string;
-  objective: string;
-  expectations: string;
-  default_selected_attendee_ids: string[];
-}
+import { errorMessage } from "@/lib/errors"
+import type { Role, SystemStatus, Template } from "@/lib/types"
 
 interface MeetingHistoryItem {
   id: string;
@@ -67,7 +40,7 @@ interface Document {
 
 export default function Home() {
   const router = useRouter()
-  const { data: roles = [], isLoading: loadingRoles, isError: rolesError } = useQuery<Role[]>({ 
+  const { data: roles = [], isError: rolesError } = useQuery<Role[]>({ 
     queryKey: ['roles'], 
     queryFn: () => apiClient.get<Role[]>('/roles') 
   })
@@ -78,7 +51,7 @@ export default function Home() {
   const queryClient = useQueryClient()
   const { data: status } = useQuery({
     queryKey: ['system_status'],
-    queryFn: () => apiClient.get<any>('/system/status')
+    queryFn: () => apiClient.get<SystemStatus>('/system/status')
   })
 
   const { data: pastMeetings = [], isLoading: loadingHistory } = useQuery<MeetingHistoryItem[]>({
@@ -92,7 +65,7 @@ export default function Home() {
       toast.success("Meeting Archived Deleted", { description: "Simulation results and logs completely purged." })
       queryClient.invalidateQueries({ queryKey: ["meetings"] })
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       toast.error("Deletion Failed", { description: err.message || "Failed to remove meeting record." })
     }
   })
@@ -146,7 +119,7 @@ export default function Home() {
         return
       }
       
-      const res: any = await apiClient.post('/meetings', {
+      const res = await apiClient.post<{ id: string }>('/meetings', {
         brief: brief,
         agenda: tpl.agenda,
         objective: tpl.objective,
@@ -159,9 +132,10 @@ export default function Home() {
       
       toast.success("Meeting Synchronised", { description: "Connecting to agent supervisor..." })
       router.push(`/meeting/${res.id}`)
-    } catch (err: any) {
-      const errorMessage = err.response?.data?.detail || err.response?.data?.message || err.message || "Failed to start meeting session.";
-      toast.error("Bridge Error", { description: errorMessage })
+    } catch (err) {
+      toast.error("Could not start meeting", {
+        description: errorMessage(err, "Failed to start the meeting session."),
+      })
       setStarting(false)
     }
   }

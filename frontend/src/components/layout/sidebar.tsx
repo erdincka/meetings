@@ -1,7 +1,7 @@
 "use client"
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Settings, Users, FileText, History, MonitorPlay } from 'lucide-react'
+import { Settings, Users, FileText, MonitorPlay } from 'lucide-react'
 import { ThemeToggle } from './ThemeToggle'
 
 export default function Sidebar() {

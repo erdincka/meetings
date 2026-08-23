@@ -1,0 +1,58 @@
+{{/*
+Schema migrations run as a Helm hook, before the app rolls out.
+
+This is why create_all() was replaced by Alembic: schema changes are now an
+explicit, ordered, reviewable step that fails the release if it fails, instead
+of a side effect of process startup racing across replicas.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "meetings.name" . }}-migrate
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  # Reaped an hour after finishing so a failed migration stays inspectable.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "meetings.name" . }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      securityContext: {{- include "meetings.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "meetings.image" (dict "registry" .Values.image.registry "image" .Values.backend.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "meetings.containerSecurityContext" . | nindent 12 }}
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+            # Set explicitly rather than envFrom the ConfigMap: this Job is a
+            # pre-install hook, and Helm creates hook resources before the
+            # release's normal resources, so the ConfigMap does not exist yet.
+            # EMBEDDING_DIM is the only value the migration actually reads --
+            # it sizes the pgvector column.
+            - name: EMBEDDING_DIM
+              value: {{ .Values.inference.embedding.dimensions | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits:   {cpu: 500m, memory: 512Mi}
+      volumes:
+        - name: tmp
+          emptyDir: {}
