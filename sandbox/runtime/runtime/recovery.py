@@ -40,6 +40,10 @@ def as_text(content: object) -> str:
 
 
 _THOUGHT_RE = re.compile(r"<(?:thought|thinking)>(.*?)</(?:thought|thinking)>", re.DOTALL)
+# An opening tag with no closing one. Models truncated at max_tokens emit
+# these, and treating the remainder as public text leaks the whole monologue
+# into the transcript -- which is what happened to a General Counsel turn.
+_UNCLOSED_THOUGHT_RE = re.compile(r"<(?:thought|thinking)>(.*)\Z", re.DOTALL)
 _LEADING_TAG_RE = re.compile(r"^\[.*?\]\s*")
 
 
@@ -101,8 +105,16 @@ def split_thought(content: str | None) -> tuple[str, str]:
         return "", ""
 
     thoughts = _THOUGHT_RE.findall(content)
-    public = _THOUGHT_RE.sub("", content).strip()
-    return public, "\n\n".join(t.strip() for t in thoughts if t.strip())
+    public = _THOUGHT_RE.sub("", content)
+
+    # Anything after an unclosed opening tag is reasoning too. Erring the other
+    # way publishes it.
+    unclosed = _UNCLOSED_THOUGHT_RE.search(public)
+    if unclosed:
+        thoughts.append(unclosed.group(1))
+        public = public[: unclosed.start()]
+
+    return public.strip(), "\n\n".join(t.strip() for t in thoughts if t.strip())
 
 
 def strip_speaker_prefix(content: str) -> str:

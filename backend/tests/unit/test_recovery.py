@@ -164,3 +164,28 @@ class TestUnresolvableIsNotFinish:
         attendees = {"id-1": FakeAttendee("Ann Lee", "CEO")}
         state = {"messages": [AIMessage(content="hi", additional_kwargs={"agent_id": "id-1"})]}
         assert _first_unheard(state, attendees) is None  # type: ignore[arg-type]
+
+
+class TestUnclosedThoughtTag:
+    """Reasoning must not reach the transcript because a tag went unclosed.
+
+    Regression: a General Counsel turn opened <thought>, ran out of tokens
+    before closing it, and the entire internal monologue was published as the
+    persona's contribution to the meeting.
+    """
+
+    def test_unclosed_tag_is_treated_as_reasoning(self) -> None:
+        public, thought = split_thought("Visible part. <thought>\nprivate musing that never closes")
+        assert public == "Visible part."
+        assert "private musing" in thought
+
+    def test_content_that_is_only_an_unclosed_thought_says_nothing_publicly(self) -> None:
+        public, thought = split_thought("<thought>\nall of this is private")
+        assert public == ""
+        assert "all of this is private" in thought
+
+    def test_closed_tags_still_work_alongside_an_unclosed_one(self) -> None:
+        public, thought = split_thought("<thought>one</thought> said aloud <thinking>two")
+        assert public == "said aloud"
+        assert "one" in thought
+        assert "two" in thought
