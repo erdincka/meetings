@@ -8,10 +8,11 @@ KUBECTL        ?= kubectl --context $(KCTX)
 HELM           ?= helm --kube-context $(KCTX)
 NODE_IMAGE     ?= kindest-node-runsc:v1.36.1
 AGENT_SANDBOX_VER ?= v0.5.6
+CALICO_VER     ?= v3.31.1
 
 .DEFAULT_GOAL := help
 .PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox \
-        smoke-pgvector deploy images lint test check security migrate seed status
+        smoke-pgvector smoke-netpol deploy images lint test check security migrate seed status
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -30,6 +31,10 @@ kind-down: ## Delete the local cluster
 	kind delete cluster --name $(CLUSTER)
 
 bootstrap: ## Install platform prerequisites (idempotent)
+	# Calico, because kindnetd does not implement NetworkPolicy -- policies
+	# apply cleanly and are never enforced. Gate 3 proves the difference.
+	$(KUBECTL) apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/$(CALICO_VER)/manifests/calico.yaml
+	$(KUBECTL) -n kube-system rollout status daemonset/calico-node --timeout=8m
 	$(HELM) repo add jetstack https://charts.jetstack.io --force-update
 	$(HELM) repo add cnpg https://cloudnative-pg.github.io/charts --force-update
 	$(HELM) upgrade --install cert-manager jetstack/cert-manager \
@@ -54,7 +59,7 @@ bootstrap: ## Install platform prerequisites (idempotent)
 	$(KUBECTL) apply -f deploy/bootstrap/cnpg-cluster.yaml
 	$(KUBECTL) -n meetings wait --for=condition=Ready cluster/meetings-postgres --timeout=8m
 
-smoke: smoke-gvisor smoke-sandbox ## Run both fail-fast gates
+smoke: smoke-gvisor smoke-netpol smoke-sandbox ## Run every fail-fast gate
 
 smoke-gvisor: ## GATE 1: assert sandboxes really run under gVisor, not runc
 	@echo ">> gate 1: gVisor runtime"
@@ -64,6 +69,10 @@ smoke-gvisor: ## GATE 1: assert sandboxes really run under gVisor, not runc
 	  || { echo "FAIL: gVisor gate"; $(KUBECTL) logs job/gvisor-smoke; exit 1; }
 	@$(KUBECTL) logs job/gvisor-smoke
 	@$(KUBECTL) delete job gvisor-smoke --ignore-not-found >/dev/null
+
+smoke-netpol: ## GATE 3: assert NetworkPolicy is enforced, not merely accepted
+	@echo ">> gate 3: NetworkPolicy enforcement"
+	@bash deploy/bootstrap/smoke-netpol.sh $(KCTX)
 
 smoke-sandbox: ## GATE 2: assert the Agent Sandbox control plane works end to end
 	@echo ">> gate 2: Agent Sandbox round trip"
