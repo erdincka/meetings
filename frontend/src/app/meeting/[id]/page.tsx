@@ -20,6 +20,7 @@ import {
   FilePlus
 } from "lucide-react"
 import AddDocDialog from "@/components/shared/AddDocDialog"
+import SandboxStatus from "@/components/meeting/SandboxStatus"
 import { toast } from 'sonner'
 
 const CHAT_COLORS = [
@@ -289,6 +290,12 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                       )}
                     </div>
                     <div className="space-y-4">
+                      <div>
+                        <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Isolated runtimes</h4>
+                        <div className="mt-1.5">
+                          <SandboxStatus eventLog={store.eventLog} attendees={roleMap} />
+                        </div>
+                      </div>
                       <div>
                         <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Participants</h4>
                         <div className="flex flex-wrap gap-1.5 mt-1.5">

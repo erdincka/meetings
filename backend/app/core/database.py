@@ -103,6 +103,7 @@ def _ensure_models_registered():  # type: ignore[no-untyped-def]
     import app.models.meetings  # noqa: F401
     import app.models.roles  # noqa: F401
     import app.models.system_settings  # noqa: F401
+    import app.models.turn_results  # noqa: F401
     from app.models.base import Base
 
     return Base

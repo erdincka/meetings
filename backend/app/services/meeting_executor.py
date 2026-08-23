@@ -15,9 +15,15 @@ from app.core.config import settings
 from app.models.meetings import Meeting
 from app.models.roles import RoleAgent
 from app.orchestration.graph import build_meeting_graph
+from app.sandbox.reaper import release_meeting_sandboxes
 from app.services.settings_service import get_runtime_settings
 
 logger = structlog.get_logger(__name__)
+
+
+# Generous: only the first call does real work, and failing here refuses the
+# meeting outright.
+CHECKPOINTER_SETUP_TIMEOUT = 60
 
 
 def _now_iso() -> str:
@@ -102,6 +108,17 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
                 final_summary=final_summary,
             )
 
+            # Hand the sandboxes back. The startup sweep covers the case where
+            # the backend dies before reaching this point.
+            sandbox_names = sorted(
+                {
+                    event["sandbox"]
+                    for event in accumulated_events
+                    if isinstance(event.get("sandbox"), str)
+                }
+            )
+            await release_meeting_sandboxes(sandbox_names)
+
             if not has_error:
                 yield {
                     "type": "meeting_completed",
@@ -126,7 +143,12 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
                     # created with psycopg's default tuple factory. The saver sets
                     # its own row factory per cursor, so this is safe at runtime.
                     checkpointer = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
-                    async with asyncio.timeout(10):
+                    # setup() is idempotent but on a fresh database it creates
+                    # several tables and indexes, which comfortably exceeds a
+                    # 10s budget on a small cluster. Timing out there meant the
+                    # very first meeting always failed, and the second
+                    # succeeded -- a confusing, self-healing symptom.
+                    async with asyncio.timeout(CHECKPOINTER_SETUP_TIMEOUT):
                         await checkpointer.setup()
 
                     logger.info("durable_checkpoint_active", meeting_id=meeting_id)
@@ -134,10 +156,13 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
                         yield event
                     return
             except Exception as exc:
+                # asyncio.TimeoutError and friends stringify to "", which makes
+                # the operator-facing message useless. Always name the type.
+                detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
                 if not settings.ALLOW_VOLATILE_CHECKPOINTS:
                     logger.error(
                         "durable_checkpoint_unavailable",
-                        error=str(exc),
+                        error=detail,
                         meeting_id=meeting_id,
                     )
                     await _update_meeting_status(meeting_id, "failed")
@@ -147,14 +172,14 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
                             "Durable checkpointing is unavailable, so this meeting "
                             "cannot be recovered if the backend restarts. Refusing to "
                             "run. Set ALLOW_VOLATILE_CHECKPOINTS=true to override in "
-                            f"development. Cause: {exc}"
+                            f"development. Cause: {detail}"
                         ),
                         "timestamp": _now_iso(),
                     }
                     return
                 logger.warning(
                     "durable_checkpoint_failed_volatile_override_active",
-                    error=str(exc),
+                    error=detail,
                     meeting_id=meeting_id,
                 )
         elif not settings.ALLOW_VOLATILE_CHECKPOINTS:

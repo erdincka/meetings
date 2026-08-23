@@ -13,10 +13,16 @@ env:
   # Settings are read from the environment at import, so lint/test runs need
   # deterministic values rather than whatever the runner happens to have.
   DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/test
+  # Unit tests never reach an endpoint -- the fake sandbox and a stubbed model
+  # stand in -- but settings are read from the environment at import, so these
+  # must be present and deterministic. Local development points the same
+  # variables at Ollama on the host; see deploy/charts/meetings/values-local.yaml.
   INFERENCE_ENDPOINT: http://inference.test/v1
   INFERENCE_MODEL_NAME: test-model
+  INFERENCE_API_KEY: ""
   EMBEDDING_ENDPOINT: http://embedding.test/v1
   EMBEDDING_MODEL_NAME: test-embed
+  EMBEDDING_API_KEY: ""
 
 jobs:
   backend:
@@ -59,13 +65,12 @@ jobs:
       - name: mypy
         run: uv run mypy app
 
-      # The floor locks in current coverage so it cannot regress. It is
-      # deliberately low: unit tests cover the pure logic extracted in Phase 1
-      # (model-output recovery, config parsing, settings contract), while most
-      # remaining code is I/O-bound route and orchestration work. Phase 2's
-      # fake-sandbox integration harness is what raises this materially.
+      # The floor locks in current coverage so it cannot regress. Phase 2's
+      # fake-sandbox harness lifted it from 8% to 21% by exercising the agent
+      # node, RPC client and state reducers together. The remaining gap is
+      # mostly route and executor code that needs a live database.
       - name: pytest
-        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing --cov-fail-under=8
+        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing --cov-fail-under=20
 
       - name: alembic upgrade
         run: uv run alembic upgrade head
@@ -74,6 +79,33 @@ jobs:
       # that surfaced when the models moved to typed declarative.
       - name: alembic drift check
         run: uv run alembic check
+
+  sandbox-runtime:
+    name: sandbox runtime (lint, types, tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sandbox/runtime
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups --frozen
+      - run: uv run ruff check runtime tests
+      - run: uv run ruff format --check runtime tests
+      - run: uv run mypy runtime
+      - run: uv run pytest tests -v
+
+      # protocol.py and recovery.py are authored in the backend and vendored
+      # into this image. If the copies drift, the two sides of the wire stop
+      # agreeing in ways that are painful to debug at runtime.
+      - name: shared modules are in sync
+        working-directory: .
+        run: |
+          bash sandbox/runtime/sync-shared.sh
+          git diff --exit-code sandbox/runtime/runtime/protocol.py \
+                               sandbox/runtime/runtime/recovery.py
 
   frontend:
     name: frontend (lint, types)
@@ -111,12 +143,13 @@ jobs:
       # including the Gateway API CRDs.
       - name: kubeconform
         run: |
-          for f in values.yaml values-local.yaml values-ollama.yaml; do
+          for f in values.yaml values-local.yaml; do
             echo "::group::$f"
             helm template meetings deploy/charts/meetings -n meetings \
               -f "deploy/charts/meetings/$f" \
             | kubeconform -strict -summary -kubernetes-version 1.36.1 \
                 -schema-location default \
+                -schema-location 'deploy/schemas/{{ .ResourceKind }}-{{ .Group }}-{{ .ResourceAPIVersion }}.json' \
                 -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
             echo "::endgroup::"
           done

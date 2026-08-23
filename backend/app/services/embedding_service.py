@@ -47,7 +47,11 @@ async def get_embedding_model(input_type: str | None = None) -> OpenAIEmbeddings
 
     params: dict[str, Any] = {
         "openai_api_base": base_url,
-        "openai_api_key": api_key,
+        # Local providers such as Ollama expose an OpenAI-compatible API with no
+        # authentication, but the client refuses to construct without *some*
+        # key. Send a placeholder rather than failing on a provider that does
+        # not want one.
+        "openai_api_key": api_key or "not-required",
         "model": model_name,
         "check_embedding_ctx_length": False,
         "request_timeout": 30,

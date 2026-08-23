@@ -82,9 +82,12 @@ status: ## Show cluster state at a glance
 # ---------------------------------------------------------------- app
 
 images: ## Build app images and load them into the kind cluster
+	bash sandbox/runtime/sync-shared.sh
 	docker build --target runtime -t meetings-backend:latest backend
 	docker build --target runtime -t meetings-frontend:latest frontend
-	kind load docker-image meetings-backend:latest meetings-frontend:latest --name $(CLUSTER)
+	docker build --target runtime -t meetings-persona-runtime:latest sandbox/runtime
+	kind load docker-image meetings-backend:latest meetings-frontend:latest \
+	  meetings-persona-runtime:latest --name $(CLUSTER)
 
 deploy: ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	$(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
@@ -100,20 +103,25 @@ lint: ## ruff + format + mypy + eslint + tsc + helm/kubeconform
 	cd backend && uv run ruff check app scripts tests
 	cd backend && uv run ruff format --check app scripts tests alembic
 	cd backend && uv run mypy app scripts
+	cd sandbox/runtime && uv run ruff check runtime tests
+	cd sandbox/runtime && uv run mypy runtime
 	cd frontend && npm run lint
 	cd frontend && npx tsc --noEmit
+	bash sandbox/runtime/sync-shared.sh && git diff --exit-code sandbox/runtime/runtime/protocol.py sandbox/runtime/runtime/recovery.py
 	$(MAKE) chart-validate
 
-test: ## Backend unit tests with coverage
+test: ## Backend + sandbox runtime tests with coverage
 	cd backend && uv run pytest tests/unit -v --cov=app --cov-report=term-missing
+	cd sandbox/runtime && uv run pytest tests -v
 
 chart-validate: ## Render every values profile and validate against API schemas
-	@for f in values.yaml values-local.yaml values-ollama.yaml; do \
+	@for f in values.yaml values-local.yaml; do \
 	  echo ">> $$f"; \
 	  helm template meetings deploy/charts/meetings -n meetings \
 	    -f deploy/charts/meetings/$$f \
 	  | kubeconform -strict -summary -kubernetes-version 1.36.1 \
 	      -schema-location default \
+	      -schema-location 'deploy/schemas/{{ .ResourceKind }}-{{ .Group }}-{{ .ResourceAPIVersion }}.json' \
 	      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'; \
 	done
 

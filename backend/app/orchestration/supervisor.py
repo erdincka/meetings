@@ -8,11 +8,15 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
 from app.orchestration.prompts import DEFAULT_SUPERVISOR_PROMPT
-from app.orchestration.recovery import as_text, recover_speaker_id
-from app.orchestration.state import MeetingState
+from app.orchestration.recovery import recover_speaker_id
+from app.orchestration.state import MeetingState, public_transcript
 
 logger = structlog.get_logger(__name__)
+
+# Enough for an ID plus a short justification.
+SUPERVISOR_MAX_TOKENS = 300
 
 
 class SupervisorDecision(BaseModel):
@@ -66,11 +70,24 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
     attendees = config["configurable"]["attendees"]
 
     llm_params = {
-        "api_key": model_settings.inference_api_key,
+        # Ollama and other local providers serve an OpenAI-compatible API with
+        # no authentication, but the client will not construct without a key.
+        "api_key": model_settings.inference_api_key or "not-required",
         "base_url": model_settings.inference_endpoint,
         "model": model_settings.inference_model_name,
-        "temperature": 0.1,  # Lower temperature for better structural adherence
-        "timeout": 90,
+        # Low temperature: the supervisor emits structured output, and drift
+        # here costs a whole turn.
+        "temperature": model_settings.supervisor_temperature,
+        "timeout": settings.LLM_TIMEOUT_SECONDS,
+        # A speaker decision is an ID and a sentence. Without a cap, a small
+        # model can ramble for hundreds of tokens and, on some providers, run
+        # past the context window into a 500. Observed on Ollama: generation
+        # reached 320+ tokens before the server errored.
+        "max_tokens": SUPERVISOR_MAX_TOKENS,
+        # The OpenAI client retries 5xx twice by default, silently turning a 90s
+        # timeout into nearly six minutes of apparent hang. This node does its
+        # own bounded retry loop with logging, so leave the transport alone.
+        "max_retries": 0,
     }
 
     if getattr(model_settings, "inference_ignore_tls", False):
@@ -128,11 +145,7 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
         try:
             logger.info("supervisor_invoking_llm", meeting_id=meeting_id, attempt=attempt)
             # Use only public conversational history (chatter) to decide next speaker
-            historical_messages = [
-                msg
-                for msg in state.get("messages", [])
-                if isinstance(msg, AIMessage) and as_text(msg.content).startswith("[")
-            ]
+            historical_messages = list(public_transcript(state.get("messages", [])))
 
             decision = await chain.ainvoke(
                 {

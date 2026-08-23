@@ -1,0 +1,82 @@
+{{/*
+Backend RBAC.
+
+The backend claims sandboxes from warm pools and reads their pods back to
+resolve the calling persona. It gets exactly those verbs, in exactly the sandbox
+namespaces, and nothing else -- notably no access to Secrets anywhere.
+
+Phase 3 splits SandboxClaim creation per capability profile, so that a persona
+lacking the code-execution grant is refused by the apiserver with a 403 rather
+than by prompt text. That is the demonstrable control the project is built
+around; this file is where it will land.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "meetings.name" . }}-backend
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+---
+{{- range $ns := list .Values.sandbox.namespace .Values.sandbox.execNamespace }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "meetings.name" $ }}-sandbox-claimer
+  namespace: {{ $ns }}
+  labels: {{- include "meetings.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch"]
+  # Pod labels are how a caller's persona is resolved; see core/sandbox_auth.py.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "meetings.name" $ }}-sandbox-claimer
+  namespace: {{ $ns }}
+  labels: {{- include "meetings.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "meetings.name" $ }}-sandbox-claimer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "meetings.name" $ }}-backend
+    namespace: {{ $.Release.Namespace }}
+---
+{{- end }}
+{{/*
+TokenReview is cluster-scoped: it is the API that turns a sandbox's projected
+token into a verified identity. This is the only cluster-level grant the backend
+holds, and it confers no ability to read or change anything.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "meetings.name" . }}-token-reviewer
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "meetings.name" . }}-token-reviewer
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "meetings.name" . }}-token-reviewer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "meetings.name" . }}-backend
+    namespace: {{ .Release.Namespace }}
