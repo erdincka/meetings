@@ -40,6 +40,22 @@ inference:
   endpoint: "http://${INFERENCE_HOST}:${INFERENCE_PORT}/v1"
   modelName: "${INFERENCE_MODEL}"
   timeoutSeconds: 300
+  # gemma4 is a reasoning model, and the chair and the agents want opposite
+  # things from that.
+  #
+  # The chair makes one bounded structured-output call. Measured against this
+  # endpoint: with reasoning on it truncated and returned invalid JSON 3 times
+  # out of 3, and meetings ended before they began; with it off the same call
+  # answers in about four seconds and every meeting has completed since.
+  #
+  # Agents are left on the provider default. Whether they reach for a tool is
+  # stochastic with this model -- observed runs range from two unprompted calls
+  # to none -- and reasoning did not reliably move it either way, so there is no
+  # measured reason to override the default here.
+  #
+  # "none" is Ollama's value and is not accepted by OpenAI.
+  reasoningEffort: ""
+  supervisorReasoningEffort: "none"
   embedding:
     endpoint: "http://${INFERENCE_HOST}:${INFERENCE_PORT}/v1"
     modelName: "${EMBEDDING_MODEL}"

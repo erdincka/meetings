@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # accepted values differ by provider -- OpenAI takes low/medium/high and
     # rejects "none", which Ollama requires.
     INFERENCE_REASONING_EFFORT: str = ""
+    # Held separately from the agents' setting: the chair makes one bounded
+    # structured-output call, where reasoning eats the budget and truncates the
+    # JSON, while an agent's turn has a far larger budget and no such failure.
+    SUPERVISOR_REASONING_EFFORT: str = ""
 
     # Vector width must match the embedding model. Changing it once chunks
     # exist is guarded by an Alembic migration.

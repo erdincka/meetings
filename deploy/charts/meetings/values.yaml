@@ -52,6 +52,9 @@ inference:
   # because the accepted values differ by provider: OpenAI takes low/medium/high
   # and rejects "none", which is exactly what Ollama needs.
   reasoningEffort: ""
+  # The chair is separate on purpose: its call is bounded and structured, so
+  # reasoning truncates it, while an agent's turn has a far larger budget.
+  supervisorReasoningEffort: ""
 
   # Per-request timeout. Hosted endpoints answer in seconds; a small model on
   # a developer laptop can take considerably longer, and the variance matters
