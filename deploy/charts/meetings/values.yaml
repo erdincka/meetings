@@ -112,6 +112,16 @@ gateway:
   className: envoy
   host: meetings.localtest.me
 
+observability:
+  # A ServiceMonitor needs the Prometheus operator CRDs. Off by default so a
+  # plain `helm install` works on a cluster that has never heard of them.
+  serviceMonitor: false
+  prometheusRelease: kube-prometheus-stack
+  # OTLP endpoint for traces. Empty disables tracing entirely: the app still
+  # serves metrics and runs normally, because telemetry must never be the reason
+  # it fails to start.
+  otlpEndpoint: ""
+
 # Static corpus backing search_corpus. Offline so runs stay reproducible.
 corpus:
   enabled: true

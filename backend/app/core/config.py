@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # loudly unless this is explicitly set (local development only).
     ALLOW_VOLATILE_CHECKPOINTS: bool = False
 
+    # Telemetry. With no endpoint set, tracing is a no-op and metrics still
+    # work -- observability must never be a reason the app fails to start.
+    OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
+    OTEL_SERVICE_NAME: str = "meetings-backend"
+
     SANDBOX_NAMESPACE: str = "meetings-sandboxes"
     SANDBOX_EXEC_NAMESPACE: str = "meetings-exec"
 

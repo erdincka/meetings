@@ -16,6 +16,7 @@ costs one round trip instead of four.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -23,6 +24,14 @@ import structlog
 from langchain_core.runnables import RunnableConfig
 
 from app.core.config import settings
+from app.core.telemetry import (
+    LLM_TOKENS,
+    MEETING_TURNS,
+    SANDBOX_ACQUIRE,
+    SANDBOXES_ACTIVE,
+    TURN_DURATION,
+    record_tool_result,
+)
 from app.orchestration import profiles
 from app.orchestration.prompts import DEFAULT_AGENT_PROMPT
 from app.orchestration.protocol import (
@@ -99,7 +108,9 @@ def create_role_agent_node(
         # NetworkPolicy its sandbox is built from. Drift is caught at meeting
         # start (see graph construction), so by here it is safe to resolve.
         profile = profiles.resolve(list(role.default_tools or []))
+        turn_started = time.monotonic()
 
+        acquire_started = time.monotonic()
         try:
             handle = await manager.acquire(
                 meeting_id=meeting_id,
@@ -108,7 +119,11 @@ def create_role_agent_node(
                 warm_pool=f"persona-{profile.name}",
             )
         except SandboxUnavailableError as exc:
+            MEETING_TURNS.labels(profile=profile.name, outcome="no_sandbox").inc()
             return _failure_state(agent_id, role, f"No sandbox available: {exc}")
+
+        SANDBOX_ACQUIRE.labels(profile=profile.name).observe(time.monotonic() - acquire_started)
+        SANDBOXES_ACTIVE.labels(profile=profile.name).inc()
 
         persona = _persona_from_role(role)
         bind = PersonaBindRequest(
@@ -169,18 +184,23 @@ def create_role_agent_node(
         )
 
         try:
+            # The sandbox is released by the meeting executor at the end of the
+            # meeting, not here: it is reused for every turn this persona takes.
             async with PersonaSandboxClient(handle.base_url) as client:
                 await client.bind(bind)
                 async for event in client.stream_turn(turn):
                     if event.type == "turn.error" and event.error is not None:
+                        MEETING_TURNS.labels(profile=profile.name, outcome="error").inc()
                         return _failure_state(agent_id, role, event.error.message)
                     if event.type == "turn.result" and event.result is not None:
+                        _record_turn_metrics(profile.name, event.result, turn_started)
                         state_update = _success_state(agent_id, handle.sandbox_name, event.result)
                         await turn_cache.record(
                             turn_key, meeting_id, agent_id, _serialisable(state_update)
                         )
                         return state_update
         except Exception as exc:
+            MEETING_TURNS.labels(profile=profile.name, outcome="error").inc()
             logger.error(
                 "sandbox_turn_failed",
                 agent_id=agent_id,
@@ -192,6 +212,30 @@ def create_role_agent_node(
         return _failure_state(agent_id, role, "Sandbox closed the stream without a result")
 
     return agent_node
+
+
+def _record_turn_metrics(profile: str, result: Any, started: float) -> None:
+    """Record the outcome of a completed turn.
+
+    Denials are counted separately from errors. Collapsing them would hide the
+    one signal this project exists to surface: the cluster refusing a persona
+    that overstepped.
+    """
+    TURN_DURATION.labels(profile=profile).observe(time.monotonic() - started)
+    MEETING_TURNS.labels(profile=profile, outcome="ok").inc()
+
+    for tool_result in result.tool_results:
+        record_tool_result(
+            profile=profile,
+            tool=tool_result.name,
+            ok=tool_result.ok,
+            denied=bool(tool_result.denied_reason),
+        )
+
+    usage = getattr(result, "usage", None)
+    if usage is not None:
+        LLM_TOKENS.labels(profile=profile, direction="prompt").inc(usage.prompt_tokens)
+        LLM_TOKENS.labels(profile=profile, direction="completion").inc(usage.completion_tokens)
 
 
 def _serialisable(state_update: dict[str, Any]) -> dict[str, Any]:
