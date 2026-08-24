@@ -35,7 +35,10 @@ async def test_a_sync_hook_really_does_break_an_async_client() -> None:
     async with httpx.AsyncClient(
         transport=transport, base_url="http://x", event_hooks={"request": [sync_hook]}
     ) as client:
-        with pytest.raises(TypeError, match="can't be used in 'await' expression"):
+        # The exact wording moved between CPython releases -- 3.13 says "object
+        # NoneType can't be used in 'await' expression", 3.14 says "'NoneType'
+        # object can't be awaited". Both name the culprit; pin that instead.
+        with pytest.raises(TypeError, match="NoneType"):
             await client.get("/")
 
 
