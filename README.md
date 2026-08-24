@@ -181,8 +181,15 @@ the UI. Attempting to set a credential through the settings API is a 422.
 
 ## Documentation
 
+- [Architecture](docs/architecture.md) — system diagram, namespaces, the turn
+  sequence across all three trust boundaries, capability profiles, and the
+  five-layer enforcement model.
 - [Sandbox security model](docs/sandbox-security-model.md) — isolation tiers,
   what was verified, and the fallback ladder for hosts without gVisor.
+- [Verifying enforcement](docs/verify-enforcement.md) — the commands that
+  produce the enforcement table, to re-run after changing a profile.
+- [Demo script](docs/demo-script.md) — a fifteen-minute, presentation-paced
+  walkthrough that provokes each claim live.
 
 ## Acknowledgements
 
