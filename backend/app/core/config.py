@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     # since a small model generating structured output on a few cores can take
     # minutes rather than seconds.
     LLM_TIMEOUT_SECONDS: int = 90
+    # Reasoning models spend their token budget thinking before they answer.
+    # gemma4 exhausted a 300-token supervisor budget on reasoning and returned
+    # truncated JSON every time; with reasoning off the same call answers
+    # correctly in ~4s. Empty means "do not send the parameter", because the
+    # accepted values differ by provider -- OpenAI takes low/medium/high and
+    # rejects "none", which Ollama requires.
+    INFERENCE_REASONING_EFFORT: str = ""
+    # Held separately from the agents' setting: the chair makes one bounded
+    # structured-output call, where reasoning eats the budget and truncates the
+    # JSON, while an agent's turn has a far larger budget and no such failure.
+    SUPERVISOR_REASONING_EFFORT: str = ""
 
     # Vector width must match the embedding model. Changing it once chunks
     # exist is guarded by an Alembic migration.

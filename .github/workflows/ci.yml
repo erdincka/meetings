@@ -115,7 +115,9 @@ jobs:
         run: |
           bash sandbox/runtime/sync-shared.sh
           git diff --exit-code sandbox/runtime/runtime/protocol.py \
-                               sandbox/runtime/runtime/recovery.py
+                               sandbox/runtime/runtime/recovery.py \
+                               sandbox/runtime/runtime/prompts.py \
+                               sandbox/runtime/runtime/tool_guidance.py
 
   frontend:
     name: frontend (lint, types)

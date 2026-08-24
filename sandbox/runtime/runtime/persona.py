@@ -37,6 +37,7 @@ def build_system_prompt(
     brief: str,
     expectations: str,
     attendee_list: str,
+    tools: str = "",
 ) -> str:
     """Substitute {{PLACEHOLDER}} tokens.
 
@@ -49,6 +50,7 @@ def build_system_prompt(
         "TITLE": persona.title,
         "DEPARTMENT": persona.department,
         "SUMMARY": persona.summary or "",
+        "PERSONA_GUIDANCE": persona.guidance or "",
         "SENIORITY": persona.seniority or "Unspecified",
         "TONE": _join(persona.tone, "Neutral"),
         "COLLABORATION_STYLE": persona.collaboration_style or "Collaborative",
@@ -63,6 +65,10 @@ def build_system_prompt(
         "BRIEF": brief,
         "EXPECTATIONS": expectations,
         "ATTENDEE_LIST": attendee_list,
+        # The tools this persona actually holds. Substituted from the runtime's
+        # own active set rather than the requested grant, so the prompt can
+        # never advertise a capability the sandbox was not provisioned for.
+        "TOOLS": tools or "You have no tools available.",
         # The supervisor prompt has always used a space here while the agent
         # prompt used an underscore. Both are accepted so neither silently
         # fails to substitute.

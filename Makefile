@@ -148,7 +148,7 @@ lint: ## ruff + format + mypy + eslint + tsc + helm/kubeconform
 	cd sandbox/runtime && uv run mypy runtime
 	cd frontend && npm run lint
 	cd frontend && npx tsc --noEmit
-	bash sandbox/runtime/sync-shared.sh && git diff --exit-code sandbox/runtime/runtime/protocol.py sandbox/runtime/runtime/recovery.py
+	bash sandbox/runtime/sync-shared.sh && git diff --exit-code sandbox/runtime/runtime/protocol.py sandbox/runtime/runtime/recovery.py sandbox/runtime/runtime/prompts.py sandbox/runtime/runtime/tool_guidance.py
 	bash scripts/generate-profile-values.sh && git diff --exit-code deploy/charts/meetings/values.yaml
 	$(MAKE) chart-validate
 

@@ -34,9 +34,17 @@ class ModelConfig(BaseModel):
     model_name: str
     temperature: float = 0.7
     timeout_seconds: int = 60
+    # Provider-specific; empty means do not send it. See
+    # Settings.INFERENCE_REASONING_EFFORT.
+    reasoning_effort: str = ""
     # Caps a turn's spoken output. Unbounded generation stalls turns and, on
     # some providers, overruns the context window into a server error.
-    max_tokens: int = 800
+    #
+    # It has to cover a whole ReAct step, not just the reply: a reasoning model
+    # thinks, calls a tool, reads the result, then answers. At 800 the budget
+    # was spent before the answer, and a Finance Director that had just queried
+    # the warehouse contributed "(no comment this turn)".
+    max_tokens: int = 2048
     ignore_tls: bool = False
 
 
@@ -64,6 +72,10 @@ class PersonaSpec(BaseModel):
     display_name: str
     title: str
     department: str
+    # The operator's free-text notes for this persona. Formerly used as the
+    # whole prompt template, which discarded every other field; it is guidance
+    # inside the template now, not a replacement for it.
+    guidance: str | None = None
     summary: str | None = None
     seniority: str | None = None
     responsibilities: list[str] = Field(default_factory=list)

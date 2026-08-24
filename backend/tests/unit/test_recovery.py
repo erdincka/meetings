@@ -122,3 +122,70 @@ class TestStripSpeakerPrefix:
 
     def test_untagged_content_untouched(self) -> None:
         assert strip_speaker_prefix("Revenue is up.") == "Revenue is up."
+
+
+class TestUnresolvableIsNotFinish:
+    """A name we cannot resolve must not read as a decision to adjourn.
+
+    Regression: the supervisor answered "Ben" -- nobody in the meeting -- and
+    the meeting ended at turn 0 with an empty transcript, because both an
+    explicit FINISH and an unresolvable name returned the same value.
+    """
+
+    def test_resolver_still_reports_finish_for_unknown_names(self) -> None:
+        from app.orchestration.recovery import recover_speaker_id
+
+        attendees = {"id-1": FakeAttendee("Ann Lee", "CEO"), "id-2": FakeAttendee("Bob Ray", "CFO")}
+        assert recover_speaker_id("Ben", {"id-1", "id-2"}, attendees) == "FINISH"
+
+    def test_supervisor_distinguishes_the_two_cases(self) -> None:
+        """The caller, not the resolver, is what must tell them apart."""
+        import inspect
+
+        from app.orchestration import supervisor
+
+        src = inspect.getsource(supervisor.supervisor_node)
+        assert "explicit_finish" in src, "unresolvable and FINISH are conflated again"
+
+    def test_fallback_picks_someone_who_has_not_spoken(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.orchestration.supervisor import _first_unheard
+
+        attendees = {"id-1": FakeAttendee("Ann Lee", "CEO"), "id-2": FakeAttendee("Bob Ray", "CFO")}
+        state = {"messages": [AIMessage(content="hi", additional_kwargs={"agent_id": "id-1"})]}
+        assert _first_unheard(state, attendees) == "id-2"  # type: ignore[arg-type]
+
+    def test_fallback_returns_none_once_everyone_has_spoken(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.orchestration.supervisor import _first_unheard
+
+        attendees = {"id-1": FakeAttendee("Ann Lee", "CEO")}
+        state = {"messages": [AIMessage(content="hi", additional_kwargs={"agent_id": "id-1"})]}
+        assert _first_unheard(state, attendees) is None  # type: ignore[arg-type]
+
+
+class TestUnclosedThoughtTag:
+    """Reasoning must not reach the transcript because a tag went unclosed.
+
+    Regression: a General Counsel turn opened <thought>, ran out of tokens
+    before closing it, and the entire internal monologue was published as the
+    persona's contribution to the meeting.
+    """
+
+    def test_unclosed_tag_is_treated_as_reasoning(self) -> None:
+        public, thought = split_thought("Visible part. <thought>\nprivate musing that never closes")
+        assert public == "Visible part."
+        assert "private musing" in thought
+
+    def test_content_that_is_only_an_unclosed_thought_says_nothing_publicly(self) -> None:
+        public, thought = split_thought("<thought>\nall of this is private")
+        assert public == ""
+        assert "all of this is private" in thought
+
+    def test_closed_tags_still_work_alongside_an_unclosed_one(self) -> None:
+        public, thought = split_thought("<thought>one</thought> said aloud <thinking>two")
+        assert public == "said aloud"
+        assert "one" in thought
+        assert "two" in thought

@@ -26,6 +26,23 @@ class SupervisorDecision(BaseModel):
     reasoning: str = Field(description="Why this speaker was chosen.")
 
 
+def _first_unheard(state: MeetingState, attendees: dict[str, Any]) -> str | None:
+    """Pick the first attendee who has not spoken yet.
+
+    Used only when the supervisor cannot name a valid speaker. Ending the
+    meeting is the worse answer while people are still waiting for a turn.
+    """
+    spoken = {
+        str(m.additional_kwargs.get("agent_id", ""))
+        for m in state.get("messages", [])
+        if getattr(m, "additional_kwargs", None)
+    }
+    for agent_id in attendees:
+        if agent_id not in spoken:
+            return agent_id
+    return None
+
+
 async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[str, Any]:
     """Decides the next speaker or if the meeting should finish."""
     current_turn = state.get("current_turn", 0)
@@ -90,6 +107,12 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
         "max_retries": 0,
     }
 
+    # Without this the chair never answers: gemma4 spends the whole 300-token
+    # budget reasoning and returns truncated JSON, which surfaces as three
+    # failed attempts and a meeting that ends before it starts.
+    if settings.SUPERVISOR_REASONING_EFFORT:
+        llm_params["reasoning_effort"] = settings.SUPERVISOR_REASONING_EFFORT
+
     if getattr(model_settings, "inference_ignore_tls", False):
         from app.core.network import get_http_client, get_sync_http_client
 
@@ -129,6 +152,10 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
         raw_prompt.replace("{{ATTENDEE LIST}}", attendee_list_str)
         .replace("{{OBJECTIVE}}", "{objective}")
         .replace("{{AGENDA}}", "{agenda}")
+        # The chair was choosing speakers without knowing what the meeting was
+        # convened to produce, which is most of what should drive the choice.
+        .replace("{{BRIEF}}", state.get("brief", "") or "None provided.")
+        .replace("{{EXPECTATIONS}}", state.get("expectations", "") or "Not specified.")
     )
 
     prompt = ChatPromptTemplate.from_messages(
@@ -171,8 +198,21 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
             # the UUID they were asked for. recover_speaker_id() resolves the
             # unambiguous near-misses and returns FINISH otherwise, rather than
             # routing the turn to an arbitrary attendee.
+            # A name we cannot resolve is not the same as a decision to stop.
+            # Both used to collapse to FINISH, so a single hallucinated name --
+            # "Ben", nobody in the room -- ended the meeting at turn 0 and the
+            # transcript came out empty. Retry instead, and if the model never
+            # produces a usable id, fall back to whoever has not spoken yet.
+            explicit_finish = next_speaker.strip().upper() == "FINISH"
             resolved = recover_speaker_id(next_speaker, set(valid_ids), attendees)
-            if resolved != next_speaker:
+            if resolved == "FINISH" and not explicit_finish:
+                logger.warning("supervisor_id_unresolvable", received=next_speaker, attempt=attempt)
+                if attempt < 2:
+                    await asyncio.sleep(0.5)
+                    continue
+                resolved = _first_unheard(state, attendees) or "FINISH"
+                logger.warning("supervisor_fell_back_to_unheard", resolved=resolved)
+            elif resolved != next_speaker:
                 logger.info("supervisor_id_resolved", received=next_speaker, resolved=resolved)
             next_speaker = resolved
 

@@ -14,7 +14,9 @@ from app.models.documents import Document, DocumentChunk
 from app.models.meetings import Meeting, MeetingTemplate
 from app.models.roles import RoleAgent
 from app.orchestration import profiles
+from app.services.cleanup import apply_cleanup_rules
 from app.services.meeting_executor import run_meeting_execution
+from app.services.settings_service import get_runtime_settings
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -286,6 +288,8 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: str) -> None:  # n
                 if meeting:
                     meeting.status = "terminated"
                     meeting.terminated = True
+                    runtime_settings = await get_runtime_settings(session)
+                    apply_cleanup_rules(meeting, runtime_settings.cleanup_rules)
                     await session.commit()
         finally:
             if meeting_id in active_meetings:
@@ -335,6 +339,8 @@ async def meeting_websocket(websocket: WebSocket, meeting_id: str) -> None:  # n
                         if meeting:
                             meeting.status = "terminated"
                             meeting.terminated = True
+                            runtime_settings = await get_runtime_settings(session)
+                            apply_cleanup_rules(meeting, runtime_settings.cleanup_rules)
                             await session.commit()
 
                     await websocket.send_json({"type": "meeting_terminated"})

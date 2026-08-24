@@ -8,9 +8,11 @@ Secrets — rather than by asking it nicely in a prompt.
 Built on the [Kubernetes Agent Sandbox](https://agent-sandbox.sigs.k8s.io/)
 project (SIG Apps), CloudNativePG, and Gateway API.
 
-> **Status:** actively being rebuilt. Phases 0–2 are complete: every agent turn
-> now executes inside its own gVisor-isolated Sandbox pod. The per-persona
-> least-privilege model lands in Phase 3. See [Roadmap](#roadmap).
+> **Status:** Phases 0–5 are complete. Every agent turn executes inside its own
+> gVisor-isolated Sandbox pod, least privilege is enforced across five
+> Kubernetes-native layers, every persona field reaches the model, and all
+> three tiers are traced. Phase 6 — integration/e2e depth, operator auth,
+> signed multi-arch images — is next. See [Roadmap](#roadmap).
 
 ## The idea
 
@@ -171,15 +173,26 @@ the UI. Attempting to set a credential through the settings API is a 422.
 | 0 | kind + gVisor + Agent Sandbox + CNPG/pgvector, fail-fast gates | ✅ done |
 | 1 | Config/secrets, Alembic, typed models, probes, CI, first tests | ✅ done |
 | 2 | Persona runtime image; agent turns execute inside sandboxes | ✅ done |
-| 3 | Full tool suite; Kubernetes-enforced least privilege; audit matrix | next |
-| 4 | Persona depth — every editable field actually reaches a prompt | |
-| 5 | OpenTelemetry across all three tiers; Prometheus + Grafana | |
-| 6 | Integration/e2e depth, operator auth, signed multi-arch images | |
+| 3 | Full tool suite; Kubernetes-enforced least privilege; audit matrix | ✅ done |
+| 4 | Persona depth — every editable field actually reaches a prompt | ✅ done |
+| 5 | OpenTelemetry across all three tiers; Prometheus + Grafana | ✅ done |
+| 6 | Integration/e2e depth, operator auth, signed multi-arch images | next |
+| — | Migrated the dev cluster from laptop `kind` to a 3-node k3s cluster on Proxmox | ✅ done |
 
 ## Documentation
 
+- [Learning path](docs/learning-path.md) — the phases read as a curriculum:
+  the question each stage answers, what would surprise you if you skipped
+  it, and a command that proves the claim.
+- [Architecture](docs/architecture.md) — system diagram, namespaces, the turn
+  sequence across all three trust boundaries, capability profiles, and the
+  five-layer enforcement model.
 - [Sandbox security model](docs/sandbox-security-model.md) — isolation tiers,
   what was verified, and the fallback ladder for hosts without gVisor.
+- [Verifying enforcement](docs/verify-enforcement.md) — the commands that
+  produce the enforcement table, to re-run after changing a profile.
+- [Demo script](docs/demo-script.md) — a fifteen-minute, presentation-paced
+  walkthrough that provokes each claim live.
 
 ## Acknowledgements
 
