@@ -151,7 +151,39 @@ mounted Secrets its sandbox is created from.
 | NetworkPolicy | Default-deny egress per profile | A stolen credential being *used* | blocked for `baseline`/`counsel`, open for `analyst`/`quant`/`chief` |
 | RBAC | Only some ServiceAccounts may claim an exec sandbox | The agent itself — a 403 from the apiserver | **yes** for `quant` only, of six profiles |
 
-Layers 3 and 4 compose: a persona with no metrics credential also has no
+The table lists each layer in isolation; the diagram below is the argument
+for having five of them. It follows one tool call — `run_python_analysis` —
+from two profiles that both attempt it, and shows that `counsel` is caught
+independently at two different layers, not just the first one it meets:
+
+```mermaid
+flowchart LR
+    call(["agent calls<br/>run_python_analysis"])
+
+    call --> prompt{"Prompt layer:<br/>tool registered?"}
+    prompt -->|"quant: yes"| runtime{"Runtime layer:<br/>in the mounted<br/>capability file?"}
+    prompt -->|"counsel: no"| stop1(["stopped here,<br/>under normal operation"])
+
+    runtime -->|"quant: yes"| rbac{"RBAC layer:<br/>apiserver grants<br/>the SandboxClaim?"}
+    runtime -.->|"counsel, if it somehow<br/>reached this layer anyway: no"| stop2(["stopped here too"])
+
+    rbac -->|"quant: yes — 200"| tierb(["Tier B exec sandbox<br/>runs the code"])
+    rbac -.->|"counsel, if it got<br/>this far anyway: 403"| stop3(["stopped here too —<br/>DENIED_BY_CLUSTER"])
+
+    style tierb stroke-width:2px
+    style stop1 stroke-dasharray: 3 3
+    style stop2 stroke-dasharray: 3 3
+    style stop3 stroke-dasharray: 3 3
+```
+
+`quant`'s path (solid) is what a normal turn does. `counsel`'s path (dashed)
+shows what happens *if* an earlier layer were somehow defeated — a
+compromised backend over-granting a tool, say — and the request kept going
+anyway: two more layers, decided by two different systems (a ConfigMap and
+the apiserver's RBAC), independently refuse it. No single bypassed layer is
+enough.
+
+Layers 3 and 4 compose the same way for data access: a persona with no metrics credential also has no
 network route to reach Postgres, so a DSN leaked into a prompt is useless to
 the wrong profile. Full verification commands and the reasoning behind each
 choice — including a correction on record for a control that measured as
