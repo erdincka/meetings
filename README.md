@@ -181,6 +181,9 @@ the UI. Attempting to set a credential through the settings API is a 422.
 
 ## Documentation
 
+- [Learning path](docs/learning-path.md) — the phases read as a curriculum:
+  the question each stage answers, what would surprise you if you skipped
+  it, and a command that proves the claim.
 - [Architecture](docs/architecture.md) — system diagram, namespaces, the turn
   sequence across all three trust boundaries, capability profiles, and the
   five-layer enforcement model.

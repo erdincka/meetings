@@ -6,6 +6,9 @@ each one is decided by Kubernetes objects, not by the prompt. This document is
 the consolidated reference for how the pieces fit together. For narrower
 questions, see the companion docs:
 
+- [`learning-path.md`](learning-path.md) — the same material read as a
+  curriculum, one stage per phase, each with the command that proves its
+  claim.
 - [`sandbox-security-model.md`](sandbox-security-model.md) — how each
   isolation tier was verified, and the fallback ladder for hosts without
   gVisor.
