@@ -114,7 +114,7 @@ class TestAttendeeList:
 class TestShippedPromptIsComplete:
     """The default prompt must actually use the persona it is given.
 
-    This is the regression that motivated Phase 4: every field below was
+    The regression this guards against: every field below was
     persisted, editable in the UI, and referenced by no template -- so editing a
     persona changed precisely nothing about how it behaved. Substituting a value
     nobody interpolates is not the same as using it.

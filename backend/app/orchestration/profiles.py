@@ -114,9 +114,28 @@ class Profile:
     #: Requires egress to the corpus service.
     needs_corpus_egress: bool = False
     description: str = ""
-    warm_replicas: int = 0
+    #: Size of this profile's SandboxWarmPool. Must be at least 1: a sandbox is
+    #: only ever obtained through a SandboxClaim, and a claim can name nothing
+    #: but a warm pool -- SandboxClaim.spec has `warmPoolRef` and no template
+    #: ref, so there is no cold-start path to fall back to. A profile at 0 gets
+    #: no SandboxWarmPool from the chart and is therefore selectable but
+    #: unclaimable: the supervisor picks it, the claim fails with "SandboxWarmPool
+    #: not found", and the meeting burns a turn per attempt without ever
+    #: producing an utterance.
+    warm_replicas: int = 1
     #: Personas seeded into this profile, matched on RoleAgent.title.
     seed_titles: tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        # At import time rather than at claim time. The failure this prevents is
+        # invisible until a meeting happens to select the profile, which in a
+        # small test may be never.
+        if self.warm_replicas < 1:
+            raise ValueError(
+                f"profile {self.name!r} has warm_replicas={self.warm_replicas}; "
+                "a claim can only name a warm pool, so anything below 1 is a "
+                "profile no meeting can ever use."
+            )
 
 
 BASELINE = Profile(
@@ -131,7 +150,9 @@ COUNSEL = Profile(
     tools=BASELINE_TOOLS | {CHECK_POLICY_COMPLIANCE},
     description="Baseline plus deterministic policy checks.",
     warm_replicas=1,
-    seed_titles=("GC",),
+    # Quality owns the standards a build is checked against, which is the same
+    # shape of work as legal compliance: deterministic checks, not opinion.
+    seed_titles=("GC", "Quality"),
 )
 
 STRATEGIST = Profile(
@@ -139,8 +160,10 @@ STRATEGIST = Profile(
     tools=BASELINE_TOOLS | {SEARCH_CORPUS},
     needs_corpus_egress=True,
     description="Baseline plus the external corpus.",
-    warm_replicas=0,
-    seed_titles=("Architect",),
+    warm_replicas=1,
+    # Both architects. This used to be the single title "Architect", which two
+    # personas shared -- so it worked by accident rather than by intent.
+    seed_titles=("Chief Architect", "Solution Architect"),
 )
 
 ANALYST = Profile(
@@ -149,7 +172,9 @@ ANALYST = Profile(
     needs_metrics_dsn=True,
     description="Baseline plus read-only business metrics. Cannot execute code.",
     warm_replicas=1,
-    seed_titles=("VP",),
+    # The inspector reads fact_quality for the same reason sales reads
+    # fact_revenue: the numbers are the job. Neither may execute code.
+    seed_titles=("VP", "Inspector"),
 )
 
 QUANT = Profile(
@@ -159,7 +184,10 @@ QUANT = Profile(
     needs_metrics_dsn=True,
     description="Metrics plus model-authored analysis, executed in a network-isolated sandbox.",
     warm_replicas=1,
-    seed_titles=("FD",),
+    # The ML engineer is the second code-execution persona, and the useful
+    # contrast with the CEO: seniority does not grant an interpreter, the job
+    # does.
+    seed_titles=("FD", "Engineer"),
 )
 
 CHIEF = Profile(

@@ -38,8 +38,15 @@ except Exception: print('blocked')")"
 done
 ```
 
-Expect `blocked` for baseline and counsel. Allow ~30s after a pod is created
-for the CNI to program its policy; testing immediately gives false passes.
+Expect `blocked` for baseline and counsel.
+
+**Wait ~15s after the pod is Running before probing.** Most CNIs program a
+pod's policy when the pod appears, not when the policy is written, so a probe
+that fires immediately measures the window before enforcement starts. Waiting
+before *creating* the pod does not help and is the natural mistake to make: the
+settle time belongs after the pod exists. Getting this wrong reports an
+enforcing cluster as unenforced, which is the expensive direction — it sends you
+looking for a CNI problem you do not have.
 
 ## Layer 3 — Secret: who holds the credential
 
@@ -62,15 +69,38 @@ changing a Kubernetes object. The runtime intersects the backend's grant with
 this list; a compromised backend cannot enable a tool the template did not
 provision.
 
+## Layer 1 — Prompt: what the persona was actually told it has
+
+```bash
+kubectl -n meetings-sandboxes logs "$pod" | grep persona_bound
+```
+
+The weakest layer, listed for completeness. It is what stops an honest mistake
+and nothing else — a model can attempt any tool call it can name, which is
+exactly why the four layers above it do not consult the prompt.
+
 ## The gates
 
 ```bash
 make smoke
 ```
 
-- **gate 1** asserts `/proc/version` reports gVisor, because a misconfigured
-  RuntimeClass silently falls back to runc
+- **gate 1** asserts `/proc/version` reports gVisor inside a pod that actually
+  ran, because a misconfigured RuntimeClass silently falls back to runc and
+  produces a green, unisolated pod
 - **gate 2** drives a real Sandbox through the controller and reaches it over
-  cluster DNS
+  cluster DNS, exercising the CRD, controller, warm path and SDK before a line
+  of application code is involved
 - **gate 3** asserts a deny-all NetworkPolicy actually blocks traffic, because
-  some CNIs accept policies without enforcing them
+  every CNI accepts policy objects and not every CNI enforces them
+
+## Before any of this
+
+```bash
+make preflight
+```
+
+Checks that the cluster can support the controls at all: the RuntimeClass really
+isolates, the CNI really enforces, the CRDs are present and their controllers
+are running. Verifying a profile on a cluster that fails preflight measures
+nothing.

@@ -50,8 +50,28 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str | None = None
 
+    # Operator authentication. Tokens are issued out of band and delivered
+    # through the meetings-runtime Secret, exactly like the inference
+    # credentials -- they are infrastructure, so they are never settable through
+    # the settings API. Two roles: a viewer reads, an operator changes what
+    # agents may do. See app.core.auth for why that split is the one that
+    # matters in this system.
+    #
+    # Disabling authentication is a deliberate, single-value decision rather
+    # than an accident of an unset variable: with AUTH_ENABLED true and no
+    # operator token the process refuses to start.
+    AUTH_ENABLED: bool = True
+    OPERATOR_TOKEN: str = ""
+    VIEWER_TOKEN: str = ""
+
     INFERENCE_ENDPOINT: str | None = None
     INFERENCE_API_KEY: str | None = None
+    #: Where persona sandboxes send model calls. They cannot reach the provider
+    #: themselves -- they have no egress off the cluster -- so the bind points
+    #: them at this backend's own proxy, which holds the credential. Empty falls
+    #: back to the provider endpoint, which is what running a runtime outside
+    #: the cluster needs.
+    SANDBOX_LLM_PROXY_URL: str | None = None
     INFERENCE_MODEL_NAME: str | None = None
     INFERENCE_IGNORE_TLS: bool = False
 
@@ -94,6 +114,11 @@ class Settings(BaseSettings):
 
     SANDBOX_NAMESPACE: str = "meetings-sandboxes"
     SANDBOX_EXEC_NAMESPACE: str = "meetings-exec"
+    # A claim missing MEETING_LABEL entirely was never created by this
+    # backend -- see app.sandbox.reaper.sweep_unlabeled_sandbox_claims. Long
+    # enough that a claim mid-creation is never mistaken for a leak, short
+    # enough that an orphan doesn't sit for days before the next restart.
+    SANDBOX_UNLABELED_CLAIM_MAX_AGE_MINUTES: int = 30
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod

@@ -14,7 +14,7 @@ backend:
   image: meetings-backend:latest
   # Pinned to one replica: meetings.py keeps the active-meeting registry in
   # process memory, so a second replica would not see meetings owned by the
-  # first. Lifting this needs the lease-based ownership planned for Phase 2.
+  # first. Lifting this needs lease-based ownership; see docs/operations.md.
   replicas: 1
   resources:
     requests: {cpu: 100m, memory: 256Mi}
@@ -77,14 +77,10 @@ inference:
   apiKeyKey: INFERENCE_API_KEY
   embeddingApiKeyKey: EMBEDDING_API_KEY
 
-  # Sandboxes run under a default-deny egress policy, and NetworkPolicy cannot
-  # match DNS names -- only addresses. List the CIDRs the inference endpoint
-  # resolves to, or sandboxes will fail every turn with a bare connection error
-  # while the backend (which is not sandboxed) works fine.
-  #
-  # For a hosted provider this is usually 0.0.0.0/0 minus the private ranges;
-  # for an endpoint on the developer's own machine it is a single host address.
-  egressCIDRs: []
+  # No sandbox egress list. Personas reach the model through the backend's
+  # /internal/v1/llm proxy, so nothing needs a route to the provider except the
+  # backend itself -- which is not sandboxed. This used to be a list of CIDRs
+  # the endpoint resolved to, which no hosted provider can honestly supply.
 
 sandbox:
   # Never hardcode gvisor in a template: hosts without runsc fall back to
@@ -106,7 +102,7 @@ sandbox:
 
   # One image, many profiles. What each profile may do is set by its
   # SandboxTemplate -- capability file, ServiceAccount, NetworkPolicy, Secrets --
-  # not by the image. Phase 3 adds analyst, counsel, strategist and chief.
+  # not by the image. The generated `profiles:` block below is the full set.
   profiles:
     baseline:
       # Warm, so no turn pays a cold gVisor pod start (seconds, versus a few
@@ -116,20 +112,82 @@ sandbox:
         requests: {cpu: 100m, memory: 256Mi}
         limits:   {cpu: "1",  memory: 768Mi}
 
+# Operator authentication.
+#
+# Two roles, split by what a mistake costs: a viewer reads meetings, transcripts
+# and the capability matrix; an operator additionally edits personas, settings
+# and meetings. That is the split that matters here rather than a generic
+# read/write one, because a persona's tool grant resolves to a capability
+# profile and the profile decides which ServiceAccount its sandbox runs under --
+# editing a persona is a privilege change.
+#
+# Tokens are generated on first install and kept across upgrades (see
+# templates/secrets.yaml). Read them with `make operator-token`.
+auth:
+  # Turning this off makes every API caller an operator. Legitimate for a
+  # single-user development cluster and nowhere else; the backend logs a warning
+  # at startup so it cannot be forgotten quietly.
+  enabled: true
+  existingSecret: ""
+  operatorTokenKey: OPERATOR_TOKEN
+  viewerTokenKey: VIEWER_TOKEN
+
 gateway:
   enabled: true
   className: envoy
   host: meetings.localtest.me
 
+  # HTTPS, off by default and deliberately so. A trusted certificate needs a
+  # domain you own and an ACME account, and making either one a prerequisite
+  # would put a DNS registration in front of `make deploy` for someone who only
+  # wants to see the thing run. Plain HTTP against a LAN hostname stays the
+  # supported default path; this is additive.
+  tls:
+    enabled: false
+    # The Secret holding tls.crt and tls.key, in the release namespace. Empty
+    # means "<release>-tls". The listener only ever names a Secret -- whether
+    # you created it with `kubectl create secret tls` or cert-manager filled it
+    # is not something the Gateway knows or cares about.
+    secretName: ""
+    # Hand the Secret to cert-manager instead of creating it yourself. Needs
+    # cert-manager built with --enable-gateway-api (its gateway-shim), which
+    # watches this annotation and writes the Certificate for you.
+    #
+    # For a host that resolves to a private address, the ACME challenge must be
+    # dns01: http01 asks Let's Encrypt to connect inbound, and it cannot reach
+    # RFC 1918 space. That is a property of the issuer you reference here, not
+    # of anything in this chart.
+    issuerRef:
+      name: ""
+      # ClusterIssuer or Issuer.
+      kind: ClusterIssuer
+    # Redirect :80 to :443. Leave off until the certificate is actually trusted
+    # -- a redirect to a cert nothing accepts turns a working HTTP deployment
+    # into an unreachable one, and the browser error names the certificate
+    # rather than the redirect that caused it.
+    redirect: false
+
 observability:
-  # A ServiceMonitor needs the Prometheus operator CRDs. Off by default so a
-  # plain `helm install` works on a cluster that has never heard of them.
-  serviceMonitor: false
+  # One switch for the whole stack: the ServiceMonitor, the OTLP endpoint handed
+  # to the backend and to every sandbox, and the Grafana listener on the Gateway.
+  #
+  # This was three independent settings turned on by a separate `make
+  # deploy-observed` target, so a later plain `make deploy` silently reverted
+  # them -- the ServiceMonitor disappeared, tracing stopped, and every dashboard
+  # panel read "no data" with nothing anywhere in an error state. One flag, set
+  # in cluster.env, cannot half-apply that way.
+  #
+  # Off by default: the CRDs it depends on are not on every cluster, and a
+  # ServiceMonitor referencing an absent CRD fails `helm install` for someone
+  # who only wanted to run the app.
+  enabled: false
   prometheusRelease: kube-prometheus-stack
-  # OTLP endpoint for traces. Empty disables tracing entirely: the app still
-  # serves metrics and runs normally, because telemetry must never be the reason
-  # it fails to start.
-  otlpEndpoint: ""
+  # Where traces go when enabled. Ignored entirely when it is not, so nothing
+  # retries against a collector that was never installed.
+  otlpEndpoint: "http://tempo.observability.svc:4317"
+  # Hostname for Grafana on the app's Gateway. Empty adds no listener.
+  gatewayHost: ""
+  namespace: observability
 
 # Static corpus backing search_corpus. Offline so runs stay reproducible.
 corpus:
@@ -181,7 +239,7 @@ profiles:
     canExecuteCode: false
     needsMetricsDsn: false
     needsCorpusEgress: true
-    warmReplicas: 0
+    warmReplicas: 1
     tools:
       - draft_artifact
       - read_artifact

@@ -33,3 +33,15 @@ readOnlyRootFilesystem: true
 capabilities:
   drop: ["ALL"]
 {{- end -}}
+
+{{/*
+The OTLP endpoint actually in force: empty unless observability is enabled.
+
+Resolved in one place because three templates consume it -- the backend's
+ConfigMap, every sandbox's env, and the sandbox NetworkPolicy egress rule that
+lets the export leave the pod. Deciding it independently in each is how a
+sandbox ends up told to export traces to a collector its own policy forbids.
+*/}}
+{{- define "meetings.otlpEndpoint" -}}
+{{- if .Values.observability.enabled }}{{ .Values.observability.otlpEndpoint }}{{ end -}}
+{{- end -}}

@@ -12,7 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from app.api.routes import api_router
+from app.api.routes import api_router, auth_router, internal_router, ws_router
+from app.core import auth
 from app.core.config import settings
 from app.core.database import check_db_ready
 from app.core.exceptions import NexusBaseException
@@ -79,13 +80,23 @@ async def _prepare_checkpointer() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup and shutdown. Replaces the deprecated @app.on_event hooks."""
+    # Refuse to serve rather than starting with authentication silently off.
+    # The same rule as the checkpointer: a control that quietly degrades to
+    # nothing is worse than one that was never claimed.
+    problem = auth.configuration_error()
+    if problem:
+        raise auth.AuthConfigurationError(problem)
+
     logger.info(
         "application_startup",
         app=settings.PROJECT_NAME,
         version=settings.VERSION,
         db_configured=bool(settings.DATABASE_URL),
         inference_configured=settings.inference_configured,
+        auth_enabled=settings.AUTH_ENABLED,
     )
+    if not settings.AUTH_ENABLED:
+        logger.warning("operator_auth_disabled", detail="every API caller is treated as operator")
     # Create the checkpointer schema now, not on the first meeting.
     #
     # AsyncPostgresSaver.setup() is idempotent but on a fresh database it
@@ -99,7 +110,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # belong to meetings which are no longer running.
     try:
         from app.core.database import async_session_maker
-        from app.sandbox.reaper import reap_abandoned_meetings, sweep_orphaned_sandboxes
+        from app.sandbox.reaper import (
+            reap_abandoned_meetings,
+            sweep_orphaned_sandboxes,
+            sweep_unlabeled_sandbox_claims,
+        )
 
         if async_session_maker is not None:
             async with async_session_maker() as session:
@@ -107,11 +122,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # meeting, since only one may be active at a time.
                 meetings_reaped = await reap_abandoned_meetings(session)
                 sandboxes_reaped = await sweep_orphaned_sandboxes(session)
-            if meetings_reaped or sandboxes_reaped:
+            unlabeled_reaped = await sweep_unlabeled_sandbox_claims()
+            if meetings_reaped or sandboxes_reaped or unlabeled_reaped:
                 logger.info(
                     "startup_sweep",
                     meetings=meetings_reaped,
                     sandboxes=sandboxes_reaped,
+                    unlabeled_claims=unlabeled_reaped,
                 )
     except Exception as exc:  # never block startup on cleanup
         logger.warning("startup_sandbox_sweep_failed", error=str(exc))
@@ -192,4 +209,10 @@ async def readiness_check() -> JSONResponse:
     )
 
 
+app.include_router(auth_router, prefix="/api/v1")
 app.include_router(api_router, prefix="/api/v1")
+app.include_router(ws_router, prefix="/api/v1")
+# Sandbox-facing. Mounted at the root, outside /api/v1, and never exposed
+# through the Gateway: the only callers are pods inside the cluster presenting a
+# ServiceAccount token.
+app.include_router(internal_router)

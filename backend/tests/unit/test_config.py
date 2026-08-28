@@ -83,7 +83,7 @@ class TestConfiguredPredicates:
 
 
 def test_config_module_performs_no_file_io(monkeypatch) -> None:
-    """The whole point of Phase 1: settings access must not touch the disk."""
+    """Settings access must not touch the disk: it is on the hot path."""
     import builtins
 
     real_open = builtins.open

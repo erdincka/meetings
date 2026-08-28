@@ -66,7 +66,7 @@ class MeetingState(TypedDict, total=False):
     event_log: Annotated[list[dict[str, Any]], merge_list]
 
     # Artifacts produced during the meeting (charts, drafts). Populated from
-    # Phase 3 onward; declared here so the reducer exists before the producers.
+    # Declared here so the reducer exists before any node produces entries.
     artifacts: Annotated[list[dict[str, Any]], merge_list]
 
     # Every tool call and refusal, including denials. This is what makes least

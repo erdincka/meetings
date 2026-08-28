@@ -31,8 +31,10 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: demo
-          image: meetings-backend:latest
-          imagePullPolicy: Never
+          # Substituted by `make demo` with the tag the release is running, so
+          # the demo driver is never a different build from the backend it is
+          # driving.
+          image: {{BACKEND_IMAGE}}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -43,6 +45,13 @@ spec:
               value: "http://meetings-backend.meetings.svc:8000/api/v1"
             - name: TURN_LIMIT
               value: "4"
+            # Creating and driving a meeting are operator actions.
+            - name: OPERATOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: meetings-auth
+                  key: OPERATOR_TOKEN
+                  optional: true
           volumeMounts:
             - {name: demo, mountPath: /demo}
             - {name: tmp, mountPath: /tmp}

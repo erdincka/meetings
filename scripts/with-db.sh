@@ -14,7 +14,7 @@ export PATH="$HOME/.rd/bin:/opt/homebrew/bin:$PATH"
 
 NS=${NS:-meetings}
 LOCAL_PORT=${LOCAL_PORT:-55432}
-CTX=${KCTX:-kind-meetings}
+CTX=${KCTX:-$(kubectl config current-context)}
 
 password=$(kubectl --context "$CTX" -n "$NS" get secret meetings-postgres-app \
   -o jsonpath='{.data.password}' | base64 -d)

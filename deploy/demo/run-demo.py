@@ -22,16 +22,23 @@ import urllib.request
 BASE = os.getenv("BACKEND_URL", "http://meetings-backend.meetings.svc:8000/api/v1")
 TURN_LIMIT = int(os.getenv("TURN_LIMIT", "4"))
 
+# The operator token, mounted from the meetings-auth Secret. Creating a meeting
+# and driving it are operator actions, not viewer ones: they spend cluster
+# resources and drive real model calls.
+TOKEN = os.getenv("OPERATOR_TOKEN", "")
+AUTH = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
+
 
 def get(path: str) -> object:
-    return json.loads(urllib.request.urlopen(BASE + path, timeout=60).read())["data"]
+    request = urllib.request.Request(BASE + path, headers=AUTH)
+    return json.loads(urllib.request.urlopen(request, timeout=60).read())["data"]
 
 
 def post(path: str, payload: dict) -> dict:
     request = urllib.request.Request(
         BASE + path,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **AUTH},
         method="POST",
     )
     return json.loads(urllib.request.urlopen(request, timeout=120).read())["data"]
@@ -72,8 +79,16 @@ async def run(meeting_id: str) -> int:
     counts: dict[str, int] = {}
     denials: list[str] = []
 
+    # The token travels as a subprotocol, the same way the browser sends it: a
+    # WebSocket handshake carries no Authorization header, and a query string
+    # would put the token in every proxy access log between here and the pod.
+    subprotocols = ["bearer", TOKEN] if TOKEN else None
+
     async with websockets.connect(
-        f"{url}/meetings/{meeting_id}/ws", ping_interval=20, max_size=None
+        f"{url}/meetings/{meeting_id}/ws",
+        ping_interval=20,
+        max_size=None,
+        subprotocols=subprotocols,
     ) as ws:
         await ws.send(json.dumps({"command": "start_meeting"}))
         while True:

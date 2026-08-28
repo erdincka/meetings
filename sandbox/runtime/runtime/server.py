@@ -43,7 +43,6 @@ structlog.configure(
 logger = structlog.get_logger(__name__)
 
 BACKEND_URL = os.getenv("BACKEND_INTERNAL_URL", "http://meetings-backend.meetings.svc:8000")
-API_KEY_FILE = Path(os.getenv("INFERENCE_API_KEY_FILE", "/etc/sandbox/secrets/inference-api-key"))
 SA_TOKEN_FILE = Path(
     os.getenv("SA_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")
 )
@@ -126,7 +125,7 @@ async def bind_persona(request: PersonaBindRequest) -> PersonaBindResponse:
         logger.info("rebinding_sandbox", previous=state.persona.bind.agent_id)
         state.cache.clear()
 
-    state.persona = BoundPersona(request, _read(API_KEY_FILE), state.backend)
+    state.persona = BoundPersona(request, state.backend, token_reader=lambda: _read(SA_TOKEN_FILE))
     logger.info(
         "persona_bound",
         agent_id=request.agent_id,

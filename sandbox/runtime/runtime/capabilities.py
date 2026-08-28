@@ -22,7 +22,8 @@ logger = structlog.get_logger(__name__)
 
 CAPABILITY_FILE = Path(os.getenv("SANDBOX_CAPABILITY_FILE", "/etc/sandbox/capabilities"))
 
-# Every profile can do these. Phase 3 adds the rest.
+# The baseline every profile carries. Anything beyond this is granted by the
+# profile's SandboxTemplate, not by this file.
 BASELINE_TOOLS = frozenset({"retrieve_documents"})
 
 

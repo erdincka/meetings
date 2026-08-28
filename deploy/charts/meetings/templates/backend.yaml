@@ -54,6 +54,23 @@ spec:
                   name: {{ .Values.inference.existingSecret }}
                   key: {{ .Values.inference.embeddingApiKeyKey }}
                   optional: true
+{{- if .Values.auth.enabled }}
+            # Not optional. With AUTH_ENABLED true and no operator token the
+            # backend refuses to start, which is the intended behaviour: a
+            # deployment that believes it is authenticated and is not is worse
+            # than one that will not come up.
+            - name: OPERATOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | default (printf "%s-auth" (include "meetings.name" .)) }}
+                  key: {{ .Values.auth.operatorTokenKey }}
+            - name: VIEWER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | default (printf "%s-auth" (include "meetings.name" .)) }}
+                  key: {{ .Values.auth.viewerTokenKey }}
+                  optional: true
+{{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "meetings.name" . }}-config
@@ -85,7 +102,14 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "meetings.name" . }}-backend
-  labels: {{- include "meetings.labels" . | nindent 4 }}
+  labels:
+    {{- include "meetings.labels" . | nindent 4 }}
+    # On the Service itself, not just in the selector below. The ServiceMonitor
+    # matches *Services* on this label, and without it the scrape config selects
+    # nothing: Prometheus reports zero targets, every dashboard panel is empty,
+    # and nothing anywhere is in an error state -- the ServiceMonitor exists, the
+    # Service exists, the backend serves /metrics, and they simply never meet.
+    app.kubernetes.io/component: backend
 spec:
   selector:
     app.kubernetes.io/name: {{ include "meetings.name" . }}

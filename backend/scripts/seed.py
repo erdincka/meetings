@@ -21,6 +21,102 @@ logger = structlog.get_logger(__name__)
 SEED_RNG = random.Random(20260401)
 
 
+# Seeded personas.
+#
+# `title` must be UNIQUE across this list. It is not decoration: the chair is
+# handed one line per attendee -- Name, Role, Department -- and picks a speaker
+# by id from that list. Five personas sharing the title "Manager" gave it five
+# rows distinguishable only by a UUID, and a small model asked to choose between
+# them reliably returned the id it had seen most recently, which is the previous
+# speaker. The chair then appeared to contradict itself: reasoning about one
+# attendee, selecting another.
+#
+# `title` is also what profiles.for_persona() matches to decide the capability
+# grant, so a duplicate title silently gave several unrelated personas the same
+# tools. test_seed_personas.py asserts uniqueness.
+SEED_PERSONAS: list[dict[str, str]] = [
+    {
+        "name": "Chief Executive Officer",
+        "title": "CEO",
+        "dept": "Executive",
+        "seniority": "Executive",
+    },
+    {
+        "name": "Finance Director",
+        "title": "FD",
+        "dept": "Finance",
+        "seniority": "Executive",
+    },
+    {
+        "name": "General Counsel",
+        "title": "GC",
+        "dept": "Legal",
+        "seniority": "Executive",
+    },
+    {
+        "name": "Manufacturing Operations Manager",
+        "title": "Manufacturing Ops",
+        "dept": "Manufacturing",
+        "seniority": "Senior",
+    },
+    {
+        "name": "Production Manager",
+        "title": "Production",
+        "dept": "Production",
+        "seniority": "Senior",
+    },
+    {
+        "name": "Supply Chain Manager",
+        "title": "Supply Chain",
+        "dept": "Supply Chain",
+        "seniority": "Senior",
+    },
+    {
+        "name": "Quality Manager",
+        "title": "Quality",
+        "dept": "Quality",
+        "seniority": "Senior",
+    },
+    {
+        "name": "QA Inspector",
+        "title": "Inspector",
+        "dept": "Quality",
+        "seniority": "Mid-Level",
+    },
+    {
+        "name": "Chief Architect",
+        "title": "Chief Architect",
+        "dept": "IT",
+        "seniority": "Senior",
+    },
+    {
+        "name": "Solution Architect",
+        "title": "Solution Architect",
+        "dept": "IT",
+        "seniority": "Senior",
+    },
+    {
+        "name": "ML Engineer",
+        "title": "Engineer",
+        "dept": "IT",
+        "seniority": "Mid-Level",
+    },
+    {
+        "name": "Systems Administrator",
+        "title": "Admin",
+        "dept": "IT",
+        "seniority": "Mid-Level",
+    },
+    {"name": "VP Sales", "title": "VP", "dept": "Sales", "seniority": "Senior"},
+    {
+        "name": "Customer Success Manager",
+        "title": "Customer Success",
+        "dept": "Success",
+        "seniority": "Mid-Level",
+    },
+]
+
+
 # Persona depth, per role.
 #
 # The seeded personas used to share one templated summary and formulaic
@@ -238,87 +334,7 @@ async def seed_data() -> None:
         stmt = select(func.count()).select_from(RoleAgent)
         res = await session.execute(stmt)
         if res.scalar() == 0:
-            roles_data: list[dict[str, str]] = [
-                {
-                    "name": "Chief Executive Officer",
-                    "title": "CEO",
-                    "dept": "Executive",
-                    "seniority": "Executive",
-                },
-                {
-                    "name": "Finance Director",
-                    "title": "FD",
-                    "dept": "Finance",
-                    "seniority": "Executive",
-                },
-                {
-                    "name": "General Counsel",
-                    "title": "GC",
-                    "dept": "Legal",
-                    "seniority": "Executive",
-                },
-                {
-                    "name": "Manufacturing Operations Manager",
-                    "title": "Manager",
-                    "dept": "Manufacturing",
-                    "seniority": "Senior",
-                },
-                {
-                    "name": "Production Manager",
-                    "title": "Manager",
-                    "dept": "Production",
-                    "seniority": "Senior",
-                },
-                {
-                    "name": "Supply Chain Manager",
-                    "title": "Manager",
-                    "dept": "Supply Chain",
-                    "seniority": "Senior",
-                },
-                {
-                    "name": "Quality Manager",
-                    "title": "Manager",
-                    "dept": "Quality",
-                    "seniority": "Senior",
-                },
-                {
-                    "name": "QA Inspector",
-                    "title": "Inspector",
-                    "dept": "Quality",
-                    "seniority": "Mid-Level",
-                },
-                {
-                    "name": "Chief Architect",
-                    "title": "Architect",
-                    "dept": "IT",
-                    "seniority": "Senior",
-                },
-                {
-                    "name": "Solution Architect",
-                    "title": "Architect",
-                    "dept": "IT",
-                    "seniority": "Senior",
-                },
-                {
-                    "name": "ML Engineer",
-                    "title": "Engineer",
-                    "dept": "IT",
-                    "seniority": "Mid-Level",
-                },
-                {
-                    "name": "Systems Administrator",
-                    "title": "Admin",
-                    "dept": "IT",
-                    "seniority": "Mid-Level",
-                },
-                {"name": "VP Sales", "title": "VP", "dept": "Sales", "seniority": "Senior"},
-                {
-                    "name": "Customer Success Manager",
-                    "title": "Manager",
-                    "dept": "Success",
-                    "seniority": "Mid-Level",
-                },
-            ]
+            roles_data: list[dict[str, str]] = SEED_PERSONAS
 
             role_ids: list[uuid.UUID] = []
             gc_agent_id = None
@@ -365,7 +381,57 @@ async def seed_data() -> None:
                     gc_agent_id = role.id
             logger.info("seed_progress", detail="Roles seeded.")
         else:
-            logger.info("seed_progress", detail="Roles already exist, skipping.")
+            # Reconcile rather than skip outright.
+            #
+            # Creating personas only on an empty table meant a change to a title
+            # or a capability grant reached a fresh database and nowhere else --
+            # so every existing deployment kept whatever it was seeded with, and
+            # the code said one thing while the running system did another. That
+            # is how five personas stayed titled "Manager" long after the list
+            # said otherwise.
+            #
+            # Matched on display_name, which is the stable identity here: titles
+            # are exactly what this may need to change. Only the two fields the
+            # profile system owns are touched; persona depth, tone and anything
+            # an operator edited in the UI are left alone.
+            renamed = 0
+            regranted = 0
+            for persona in SEED_PERSONAS:
+                current = (
+                    (
+                        await session.execute(
+                            select(RoleAgent).where(RoleAgent.display_name == persona["name"])
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if current is None:
+                    continue
+                if current.title != persona["title"]:
+                    logger.info(
+                        "seed_persona_retitled",
+                        persona=persona["name"],
+                        was=current.title,
+                        now=persona["title"],
+                    )
+                    current.title = persona["title"]
+                    renamed += 1
+                granted = sorted(profiles.for_persona(persona["title"]).tools)
+                if sorted(current.default_tools or []) != granted:
+                    logger.info(
+                        "seed_persona_regranted",
+                        persona=persona["name"],
+                        profile=profiles.for_persona(persona["title"]).name,
+                    )
+                    current.default_tools = granted
+                    regranted += 1
+            await session.flush()
+            logger.info(
+                "seed_progress",
+                detail=f"Roles reconciled ({renamed} retitled, {regranted} regranted).",
+            )
+
             # We need role_ids and gc_agent_id for subsequent sections
             role_ids = list((await session.execute(select(RoleAgent.id))).scalars().all())
             gc_stmt = select(RoleAgent.id).where(RoleAgent.title == "GC")

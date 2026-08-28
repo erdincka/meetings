@@ -5,7 +5,7 @@ Two things these had to fix.
 **Dead persona fields.** RoleAgent carries responsibilities, KPIs, objectives,
 seniority, risk tolerance and challenge style. All of them were persisted,
 editable in the UI, and referenced by no template -- so editing a persona
-changed nothing about how it behaved. Phase 2 routed them as far as the
+changed nothing about how it behaved. They are now routed as far as the
 substitution layer; they only actually reach the model once the template names
 them, which is what happens below.
 

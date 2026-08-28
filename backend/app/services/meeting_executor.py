@@ -16,7 +16,7 @@ from app.models.meetings import Meeting
 from app.models.roles import RoleAgent
 from app.orchestration.graph import build_meeting_graph, validate_attendee_profiles
 from app.orchestration.profiles import ProfileDriftError
-from app.sandbox.reaper import release_meeting_sandboxes
+from app.sandbox.manager import manager
 from app.services.settings_service import get_runtime_settings
 
 logger = structlog.get_logger(__name__)
@@ -119,16 +119,15 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
                 final_summary=final_summary,
             )
 
-            # Hand the sandboxes back. The startup sweep covers the case where
-            # the backend dies before reaching this point.
-            sandbox_names = sorted(
-                {
-                    event["sandbox"]
-                    for event in accumulated_events
-                    if isinstance(event.get("sandbox"), str)
-                }
-            )
-            await release_meeting_sandboxes(sandbox_names)
+            # Hand the sandboxes back. The manager holds the leases, so it is
+            # asked rather than the event log: a sandbox replaced mid-meeting
+            # after an eviction appears in the log under a name that is already
+            # gone, while the replacement may not appear there at all.
+            #
+            # The startup sweep covers the case where the backend dies before
+            # reaching this point, and the SandboxTemplate's shutdown policy
+            # covers the case where it never comes back.
+            await manager.release_meeting(meeting_id)
 
             if not has_error:
                 yield {

@@ -9,6 +9,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
+import { readToken, websocketProtocols } from '@/lib/auth'
+import { useOperatorSession } from '@/providers/auth-guard'
 import ReactMarkdown from 'react-markdown'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
@@ -67,6 +69,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
   const meetingId = unwrappedParams.id
   
   const store = useMeetingStore()
+  const { canMutate } = useOperatorSession()
   const [socket, setSocket] = useState<WebSocket | null>(null)
 
   const { data: meeting, isLoading } = useQuery({
@@ -126,13 +129,20 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                        (meeting.meeting_log || []).some((e: EventLogItem) => e.type === 'meeting_completed' || e.is_conclusion);
     if (isFinished) return;
     
+    // A viewer's handshake is refused by the backend, and an unexplained
+    // closed socket reads as an outage. Do not open one at all.
+    if (!canMutate) return
+
     setSocket(null); // Clear previous socket if any before reconnecting
 
     // Only start WebSocket if meeting is draft, queued, or running
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
     const wsUrl = `${protocol}//${host}/api/v1/meetings/${meetingId}/ws`
-    const ws = new WebSocket(wsUrl)
+    // A browser cannot set an Authorization header on a WebSocket handshake, so
+    // the token travels as a subprotocol -- the only caller-controlled field,
+    // and one that does not end up in proxy logs the way a query string does.
+    const ws = new WebSocket(wsUrl, websocketProtocols(readToken()))
     
     ws.onopen = () => {
       // If it was a draft, automatically start it
@@ -159,7 +169,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
     
     setSocket(ws)
     return () => ws.close()
-  }, [meetingId, meeting, isLoading])
+  }, [meetingId, meeting, isLoading, canMutate])
 
   const queryClient = useQueryClient()
 
@@ -197,8 +207,9 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
   // NOTE: the backend accepts a 'stop_meeting' command for a graceful
   // end-of-turn stop, but nothing writes stop_requested into graph state, so
   // the in-graph stop path is unreachable and only task cancellation works.
-  // Phase 2 wires this properly along with the sandbox RPC path; a button that
-  // silently fails to stop the meeting would be worse than no button.
+  // So the button cancels the task rather than pretending to request a
+  // graceful stop: a control that silently fails to stop the meeting would be
+  // worse than no control at all.
   const handleTerminate = () => socket?.send(JSON.stringify({ command: 'terminate_meeting' }))
 
   const colorsRef = useRef<Record<string, string>>({})
@@ -253,7 +264,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                store.status === 'failed' ? 'ERROR' : 
                'READYING FABRIC...'}
             </Badge>
-            {store.status === 'running' && (
+            {store.status === 'running' && canMutate && (
                <button onClick={handleTerminate} className="px-3 py-1 text-xs rounded bg-red-500/20 text-red-300 hover:bg-red-500/40 transition">
                  Terminate
                </button>
@@ -470,7 +481,7 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                    </div>
                    
                    {/* Manual Start Button Fallback */}
-                   {store.status !== 'running' && (
+                   {store.status !== 'running' && canMutate && (
                      <button 
                        onClick={() => socket?.send(JSON.stringify({ command: 'start_meeting' }))}
                        className="mt-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-all shadow-lg"

@@ -1,14 +1,30 @@
 {{- if .Values.gateway.enabled }}
 {{/*
 Gateway API instead of an Ingress or an Istio VirtualService. Envoy Gateway
-provides the GatewayClass (see deploy/bootstrap/gatewayclass.yaml) and handles
-the WebSocket upgrade that /api/v1/meetings/{id}/ws depends on.
+provides the GatewayClass (see deploy/cluster/templates/gatewayclass.yaml) and
+handles the WebSocket upgrade that /api/v1/meetings/{id}/ws depends on.
 */}}
+{{- $tls := .Values.gateway.tls | default dict }}
+{{- $secret := $tls.secretName | default (printf "%s-tls" (include "meetings.name" .)) }}
+{{- $issuer := (($tls.issuerRef).name) | default "" }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: {{ include "meetings.name" . }}
   labels: {{- include "meetings.labels" . | nindent 4 }}
+  {{- if and $tls.enabled $issuer }}
+  annotations:
+    {{- /*
+    cert-manager's gateway-shim reads this, resolves the listener's hostname to
+    a dnsNames entry, and writes a Certificate targeting the Secret named in
+    certificateRefs below. Nothing else in this chart creates that Secret.
+    */}}
+    {{- if eq (($tls.issuerRef).kind | default "ClusterIssuer") "Issuer" }}
+    cert-manager.io/issuer: {{ $issuer | quote }}
+    {{- else }}
+    cert-manager.io/cluster-issuer: {{ $issuer | quote }}
+    {{- end }}
+  {{- end }}
 spec:
   gatewayClassName: {{ .Values.gateway.className }}
   listeners:
@@ -19,6 +35,40 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
+    {{- if $tls.enabled }}
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: {{ .Values.gateway.host | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ $secret | quote }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
+    {{- if .Values.observability.enabled }}
+    {{- with .Values.observability.gatewayHost }}
+    {{- /*
+    Grafana, on the same address as the app. Scoped by selector rather than
+    `from: All`: this listener exists for one namespace, and `All` would let any
+    namespace in the cluster attach a route to a hostname the platform owner
+    published. The app's own listener above is untouched and stays `from: Same`.
+    */}}
+    - name: observability
+      protocol: HTTP
+      port: 80
+      hostname: {{ . | quote }}
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Values.observability.namespace | quote }}
+    {{- end }}
+    {{- end }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -28,6 +78,16 @@ metadata:
 spec:
   parentRefs:
     - name: {{ include "meetings.name" . }}
+      {{- if and $tls.enabled $tls.redirect }}
+      {{- /*
+      Bound to the HTTPS listener alone, because the HTTP one now serves the
+      redirect below. Without sectionName this route would attach to every
+      listener whose hostname matches, and the redirect route would attach
+      alongside it -- two routes on :80, with the winner decided by HTTPRoute
+      precedence rather than by anything stated here.
+      */}}
+      sectionName: https
+      {{- end }}
   hostnames:
     - {{ .Values.gateway.host | quote }}
   rules:
@@ -50,4 +110,24 @@ spec:
       backendRefs:
         - name: {{ include "meetings.name" . }}-frontend
           port: 80
+{{- if and $tls.enabled $tls.redirect }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "meetings.name" . }}-https-redirect
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "meetings.name" . }}
+      sectionName: http
+  hostnames:
+    - {{ .Values.gateway.host | quote }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+{{- end }}
 {{- end }}

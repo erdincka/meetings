@@ -1,0 +1,21 @@
+# The RuntimeClass sandboxes run under.
+#
+# `handler` must match the runtime name registered with containerd on the nodes
+# (`containerd-shim-runsc-v1` is registered as `runsc`). A handler that does not
+# match is the failure worth knowing about: on several runtimes it does not
+# produce an error, it falls back to runc, and the resulting pod is green,
+# Ready, and completely unisolated. `make preflight` greps /proc/version inside
+# a pod that actually ran, precisely because nothing about the object below can
+# tell you whether it worked.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+# Optional, and only useful on a cluster where some nodes have runsc and others
+# do not: uncomment to keep sandbox pods off nodes that cannot honour the
+# handler, rather than having them scheduled and silently downgraded.
+#
+# scheduling:
+#   nodeSelector:
+#     sandbox.gke.io/runtime: gvisor

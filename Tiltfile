@@ -1,17 +1,36 @@
 # -*- mode: Python -*-
-# Inner dev loop against the local kind cluster.
+# Inner development loop against your cluster.
 #
-# Replaces the previous Tiltfile, which targeted the rancher-desktop k3s
-# context and pushed to an HPE PCAI registry. The cluster is now kind with
-# gVisor-backed Agent Sandbox; see deploy/kind/cluster.yaml and the Makefile.
+# `make deploy` is the deployment path and stays authoritative. Tilt exists only
+# to shorten the edit-to-running-code cycle on the two images that change most:
+# it syncs source into the running containers instead of rebuilding, tagging,
+# pushing and rolling.
+#
+# The sandbox images are deliberately absent. A persona sandbox is claimed from
+# a warm pool and torn down at the end of a meeting, so live-updating one gets
+# you a pod that is about to be replaced; rebuild those with `make images`.
 
-allow_k8s_contexts('kind-meetings')
+load('ext://helm_resource', 'helm_resource')
 
-# kind loads images directly from the daemon -- no registry round trip needed.
+# Explicit rather than a wildcard: Tilt rebuilds and redeploys, and doing that
+# against a context you did not mean to name is an expensive mistake. Set
+# TILT_CONTEXT to your own.
+allow_k8s_contexts(os.getenv('TILT_CONTEXT', 'default'))
+
+registry = str(local(
+    "sed -n 's/^IMAGE_REGISTRY=//p' deploy/cluster/cluster.env",
+    quiet=True,
+)).strip()
+
+if not registry:
+    fail('deploy/cluster/cluster.env is missing or has no IMAGE_REGISTRY. ' +
+         'Copy deploy/cluster/cluster.env.example and edit it.')
+
 docker_build(
-    'meetings-backend',
+    registry + '/meetings-backend',
     './backend',
     dockerfile='./backend/Dockerfile',
+    target='runtime',
     live_update=[
         sync('./backend/app', '/app/app'),
         sync('./backend/scripts', '/app/scripts'),
@@ -21,19 +40,23 @@ docker_build(
 )
 
 docker_build(
-    'meetings-frontend',
+    registry + '/meetings-frontend',
     './frontend',
     dockerfile='./frontend/Dockerfile',
+    target='runtime',
     live_update=[
-        sync('./frontend', '/app'),
+        sync('./frontend/src', '/app/src'),
         run('npm ci',
             trigger=['./frontend/package.json', './frontend/package-lock.json']),
     ],
 )
 
-# The persona runtime image is added in Phase 2 (sandbox/runtime).
-# The exec-python and policy images are added in Phase 3.
+k8s_yaml(helm(
+    './deploy/charts/meetings',
+    name='meetings',
+    namespace='meetings',
+    values=['./deploy/charts/meetings/values-cluster.yaml'],
+))
 
-# App chart lands in Phase 1 at deploy/charts/meetings. Until then the platform
-# is brought up with `make kind-up`, which is authoritative for the cluster.
-# k8s_yaml(helm('./deploy/charts/meetings', name='meetings', namespace='meetings'))
+k8s_resource('meetings-backend', port_forwards=['8000:8000'])
+k8s_resource('meetings-frontend', port_forwards=['3000:80'])

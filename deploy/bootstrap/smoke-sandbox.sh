@@ -6,10 +6,12 @@
 # a persona runtime. Runs in ~20s, before any application code exists.
 set -euo pipefail
 
-KCTX="${1:-kind-meetings}"
+# Empty means "whatever kubectl is already pointed at", which is the right
+# default now that the cluster is yours rather than one this repo creates.
+KCTX="${1:-}"
 NS=meetings-sandboxes
 NAME=smoke-sandbox
-k() { kubectl --context "$KCTX" "$@"; }
+k() { if [ -n "$KCTX" ]; then kubectl --context "$KCTX" "$@"; else kubectl "$@"; fi; }
 
 cleanup() { k -n "$NS" delete sandbox "$NAME" --ignore-not-found >/dev/null 2>&1 || true; }
 trap cleanup EXIT

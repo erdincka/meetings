@@ -1,0 +1,145 @@
+name: Release
+
+# Publishes the five images this project ships, multi-arch, signed, with a
+# recorded build provenance and an SBOM each.
+#
+# The question a content-addressed tag answers is "did this image change?" —
+# which is a cache-correctness question, and it is answered elsewhere, by
+# scripts/image-tags.sh. The question this workflow answers is different and is
+# the one that matters before anyone runs the thing on a cluster they care
+# about: **did this image come from this repository, built from this commit, by
+# CI, and has anything touched it since?**
+#
+# Three artefacts answer it, and they are not interchangeable:
+#
+#   signature    — cosign, keyless via the workflow's OIDC identity. Proves the
+#                  image was signed by *this workflow in this repository*. No
+#                  private key is stored anywhere, so there is none to leak and
+#                  none to rotate.
+#   provenance   — a SLSA attestation naming the commit, the workflow and the
+#                  builder. A signature says who signed; provenance says what
+#                  was built and from where.
+#   SBOM         — the package inventory, so a future CVE can be answered with
+#                  "yes, in these images" rather than by rebuilding to find out.
+#
+# Verification is `make verify-images`, and the docs treat running it as part of
+# an install rather than as an optional extra.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (defaults to the commit SHA)"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  images:
+    name: ${{ matrix.image.name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Push to GHCR.
+      packages: write
+      # Mint the short-lived OIDC token cosign signs with. This is what makes
+      # the signature keyless: the identity is the workflow, not a secret.
+      id-token: write
+      # Record the provenance attestation against the repository.
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: meetings-backend, context: backend, target: runtime }
+          - { name: meetings-frontend, context: frontend, target: runtime }
+          - { name: meetings-persona-runtime, context: sandbox/runtime, target: runtime }
+          - { name: meetings-exec-python, context: sandbox/exec-python, target: "" }
+          - { name: meetings-corpus, context: sandbox/corpus, target: "" }
+    steps:
+      - uses: actions/checkout@v5
+
+      # protocol.py and friends are authored in the backend and vendored into
+      # the runtime image. Publishing a drifted copy would ship two sides of a
+      # wire contract that disagree, so the sync runs before the build and the
+      # result is checked.
+      - name: shared modules are in sync
+        run: |
+          bash sandbox/runtime/sync-shared.sh
+          git diff --exit-code sandbox/runtime/runtime/protocol.py \
+                               sandbox/runtime/runtime/recovery.py \
+                               sandbox/runtime/runtime/prompts.py \
+                               sandbox/runtime/runtime/tool_guidance.py
+
+      # QEMU only for the arm64 leg. Emulated builds are slow, which is why the
+      # development inner loop uses a native builder instead; a release is
+      # infrequent enough that correctness beats speed here.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image.name }}
+          tags: |
+            type=ref,event=tag
+            type=sha,format=long
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          target: ${{ matrix.image.target }}
+          # amd64 because that is what most clusters run; arm64 because Apple
+          # Silicon is the common development machine and a demo that cannot be
+          # run locally is a demo nobody checks.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Provenance and SBOM as OCI attestations attached to the index, so
+          # they travel with the image rather than living in a build log.
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: sign the digest
+        # The digest, not the tag: a tag can be moved to point at something
+        # else, and a signature over a movable name proves nothing about the
+        # bytes anyone actually pulls.
+        run: |
+          cosign sign --yes \
+            "${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image.name }}@${{ steps.build.outputs.digest }}"
+
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # Fails the release rather than publishing something that cannot be
+      # verified. A verification step that only runs when someone remembers is
+      # not a supply-chain control.
+      - name: verify what was just published
+        run: |
+          scripts/verify-images.sh \
+            "${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image.name }}@${{ steps.build.outputs.digest }}"
+        env:
+          EXPECTED_REPO: ${{ github.repository }}

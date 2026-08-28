@@ -54,8 +54,9 @@ def build_fake_sandbox(state: FakeSandboxState) -> FastAPI:
     async def bind(request: PersonaBindRequest) -> PersonaBindResponse:
         state.binds.append(request)
         bound["current"] = request
-        # Mirrors the real runtime: only baseline tools exist in Phase 2, so
-        # anything else is refused rather than silently accepted.
+        # Mirrors the real runtime's refusal path: a tool the capability file
+        # does not provide is refused explicitly rather than silently accepted,
+        # so a backend that over-grants is visible rather than merely ignored.
         active = [t for t in request.granted_tools if t == "retrieve_documents"]
         refused = [t for t in request.granted_tools if t != "retrieve_documents"]
         return PersonaBindResponse(

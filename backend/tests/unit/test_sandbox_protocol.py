@@ -164,8 +164,23 @@ class TestGenerationCaps:
         )
         assert restored.max_tokens == 256
 
-    def test_supervisor_cap_is_modest(self) -> None:
-        """A speaker decision is an ID and a sentence, not an essay."""
+    def test_supervisor_cap_is_bounded_but_leaves_room_to_reason(self) -> None:
+        """Bounded, because an uncapped small model rambles past the context
+        window into a provider 500. But well clear of the working set, because
+        the failure at the other end is worse and much harder to see.
+
+        This asserted <= 500 while the value was 300, which encoded "a decision
+        is an ID and a sentence" -- true only of models that answer immediately.
+        A model that reasons first spends the budget thinking and is cut off
+        mid-tool-call: finish_reason="length", an incomplete call that arrives
+        as no call at all, and a meeting that ends at turn 0 after three clean
+        HTTP 200s. Observed output was ~300-365 tokens for a four-attendee room,
+        so a 500 ceiling was inside the range it needed.
+        """
         from app.orchestration.supervisor import SUPERVISOR_MAX_TOKENS
 
-        assert 0 < SUPERVISOR_MAX_TOKENS <= 500
+        assert SUPERVISOR_MAX_TOKENS >= 1000, (
+            "too tight to hold reasoning plus a tool call; models that think "
+            "before answering get truncated and return nothing"
+        )
+        assert SUPERVISOR_MAX_TOKENS <= 4000, "a speaker decision is not an essay"

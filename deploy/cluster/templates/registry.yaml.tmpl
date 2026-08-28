@@ -1,13 +1,15 @@
 # In-cluster image registry.
 #
-# Replaces `kind load`, which only existed because kind nodes are containers
-# with their own image stores. A real registry means images are pushed once and
-# pulled by any node -- and it removes the awkwardness where a rebuilt image had
-# to be explicitly re-loaded before the cluster could see it.
+# Optional, and only for building your own images: a published release is pulled
+# from a public registry and needs none of this. Use it for a fork, an air-gapped
+# cluster, or an inner loop where pushing to an external registry is the slow
+# step.
 #
-# Plain HTTP on the LAN: this is a lab registry holding nothing secret, and TLS
-# would mean distributing a CA to every node for no benefit here. The nodes are
-# configured to treat it as insecure accordingly.
+# Plain HTTP, deliberately. It holds nothing secret and TLS would mean
+# distributing a CA to every node for no benefit -- but it does mean each node's
+# container runtime has to be told to trust it as an insecure mirror, which is a
+# host-level change (see install-prerequisites.sh registry). Do not expose this
+# outside the cluster network.
 apiVersion: v1
 kind: Namespace
 metadata:

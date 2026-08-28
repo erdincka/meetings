@@ -1,0 +1,85 @@
+# Values for your cluster, rendered from deploy/cluster/cluster.env.
+#
+# Everything that varies between clusters lives here; deploy/charts/meetings/
+# values.yaml holds the parts that do not. `make deploy` renders this and passes
+# it to Helm.
+
+image:
+  registry: ""
+  # Content-addressed tags are immutable, so a tag already on the node genuinely
+  # does not need re-pulling. A mutable tag would need Always and a matching
+  # willingness to pull on every restart.
+  pullPolicy: IfNotPresent
+
+# Overridden by `make deploy` with content-addressed tags when you build your
+# own images. These defaults are what a published release pulls, and let
+# `helm template` run without a cluster.
+backend:
+  image: ${IMAGE_REGISTRY}/meetings-backend:${IMAGE_TAG}
+frontend:
+  image: ${IMAGE_REGISTRY}/meetings-frontend:${IMAGE_TAG}
+
+sandbox:
+  runtimeImage: ${IMAGE_REGISTRY}/meetings-persona-runtime:${IMAGE_TAG}
+  execImage: ${IMAGE_REGISTRY}/meetings-exec-python:${IMAGE_TAG}
+  # Never hardcoded in a template. A cluster without runsc drops to a weaker
+  # tier by changing this one value; see docs/requirements.md for what each
+  # tier gives up.
+  runtimeClassName: ${SANDBOX_RUNTIME_CLASS}
+
+corpus:
+  enabled: true
+  image: ${IMAGE_REGISTRY}/meetings-corpus:${IMAGE_TAG}
+
+gateway:
+  # Derived from APP_DOMAIN rather than set independently. The app and Grafana
+  # are served by one Gateway on one address, so two separately-configured
+  # hostnames could only ever disagree with each other.
+  host: meetings.${APP_DOMAIN}
+  # Every setting here has a default, so a cluster.env written before HTTPS
+  # existed still renders. Off means plain HTTP, which needs no domain and no
+  # certificate authority -- see the HTTPS section of cluster.env.example.
+  tls:
+    enabled: ${APP_TLS_ENABLED:-false}
+    secretName: "${APP_TLS_SECRET:-}"
+    issuerRef:
+      name: "${APP_TLS_ISSUER:-}"
+      kind: ${APP_TLS_ISSUER_KIND:-ClusterIssuer}
+    redirect: ${APP_TLS_REDIRECT:-false}
+
+inference:
+  endpoint: "${INFERENCE_ENDPOINT}"
+  modelName: "${INFERENCE_MODEL}"
+  # Hosted endpoints answer in seconds; a small model on a workstation CPU can
+  # take minutes, and the variance matters more than the mean -- a tight timeout
+  # turns a slow turn into a failed one.
+  timeoutSeconds: 300
+  # Reasoning is set separately for the chair and the agents because they want
+  # opposite things from it: the chair makes one bounded structured-output call
+  # that a thinking budget truncates, while an agent turn has room to spare.
+  #
+  # Both default to empty, meaning "send nothing", because the accepted values
+  # are provider-specific and there is no portable one. This was hardcoded to
+  # "none" for the chair -- an Ollama value -- and on OpenRouter that produced a
+  # 200 response whose tool call never parsed, so the chair picked nobody and the
+  # meeting ended at turn 0. Nothing errored; the field was simply honoured by
+  # one provider and quietly fatal on another.
+  #
+  # Ollama accepts "none"; OpenAI-style providers take low/medium/high and reject
+  # "none". Set these only if you know what your provider does with them.
+  reasoningEffort: "${INFERENCE_REASONING_EFFORT:-}"
+  supervisorReasoningEffort: "${SUPERVISOR_REASONING_EFFORT:-}"
+  embedding:
+    endpoint: "${EMBEDDING_ENDPOINT}"
+    modelName: "${EMBEDDING_MODEL}"
+    dimensions: ${EMBEDDING_DIMENSIONS}
+
+observability:
+  # Scraping, tracing and the Grafana listener all follow this one flag, so
+  # `make deploy` cannot leave the stack half-wired the way the old
+  # deploy/deploy-observed split did.
+  enabled: ${OBSERVABILITY_ENABLED:-false}
+  otlpEndpoint: "${OBSERVABILITY_OTLP_ENDPOINT:-http://tempo.observability.svc:4317}"
+  gatewayHost: "grafana.${APP_DOMAIN}"
+
+logLevel: INFO

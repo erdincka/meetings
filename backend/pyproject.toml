@@ -36,10 +36,11 @@ dependencies = [
     "websockets>=16.0",
 ]
 
-# Removed in Phase 1:
-#   email-validator          - never imported
-#   passlib[bcrypt]          - no auth code existed; operator auth lands in Phase 6
-#   python-jose[cryptography]- ditto
+# Operator authentication needs no password hashing or JWT library: tokens are
+# issued out of band into a Kubernetes Secret and compared with
+# hmac.compare_digest. There is no user store to hash against and no claim set to
+# sign, so passlib and python-jose would be dependencies carrying risk for a
+# problem this design does not have.
 
 [dependency-groups]
 dev = [
@@ -94,5 +95,5 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
 markers = [
-    "integration: requires a live Postgres (testcontainers)",
+    "integration: requires a live Postgres and exercises the assembled app",
 ]

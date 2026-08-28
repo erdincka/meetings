@@ -54,8 +54,10 @@ logger = structlog.get_logger(__name__)
 def _persona_from_role(role: Any) -> PersonaSpec:
     """Map a RoleAgent row onto the wire persona.
 
-    Every field here was persisted and editable in the UI while reaching no
-    prompt at all before Phase 2.
+    Every field here is persisted, editable in the UI, and reaches a prompt.
+    Keeping that true is what this mapping is for: a field that is editable and
+    inert is worse than one that does not exist, because it invites an operator
+    to tune something that changes nothing.
     """
     return PersonaSpec(
         display_name=role.display_name,
@@ -111,21 +113,6 @@ def create_role_agent_node(
         profile = profiles.resolve(list(role.default_tools or []))
         turn_started = time.monotonic()
 
-        acquire_started = time.monotonic()
-        try:
-            handle = await manager.acquire(
-                meeting_id=meeting_id,
-                agent_id=agent_id,
-                profile=profile.name,
-                warm_pool=f"persona-{profile.name}",
-            )
-        except SandboxUnavailableError as exc:
-            MEETING_TURNS.labels(profile=profile.name, outcome="no_sandbox").inc()
-            return _failure_state(agent_id, role, f"No sandbox available: {exc}")
-
-        SANDBOX_ACQUIRE.labels(profile=profile.name).observe(time.monotonic() - acquire_started)
-        SANDBOXES_ACTIVE.labels(profile=profile.name).inc()
-
         persona = _persona_from_role(role)
         bind = PersonaBindRequest(
             agent_id=agent_id,
@@ -148,7 +135,12 @@ def create_role_agent_node(
             granted_tools=sorted(profile.tools),
             model=ModelConfig(
                 timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
-                endpoint=settings_obj.inference_endpoint or "",
+                # The proxy, not the provider. A sandbox has no route off the
+                # cluster and no provider credential; it authenticates to this
+                # backend with its ServiceAccount token and the backend forwards.
+                # Falling back to the provider endpoint keeps a runtime running
+                # outside the cluster working.
+                endpoint=settings.SANDBOX_LLM_PROXY_URL or settings_obj.inference_endpoint or "",
                 model_name=settings_obj.inference_model_name or "",
                 temperature=settings_obj.inference_temperature,
                 ignore_tls=bool(settings_obj.inference_ignore_tls),
@@ -190,35 +182,94 @@ def create_role_agent_node(
             directive=str(state.get("next_speaker_reason") or ""),
         )
 
-        try:
-            # The sandbox is released by the meeting executor at the end of the
-            # meeting, not here: it is reused for every turn this persona takes.
-            async with PersonaSandboxClient(handle.base_url) as client:
-                await client.bind(bind)
-                async for event in client.stream_turn(turn):
-                    if event.type == "turn.error" and event.error is not None:
-                        MEETING_TURNS.labels(profile=profile.name, outcome="error").inc()
-                        return _failure_state(agent_id, role, event.error.message)
-                    if event.type == "turn.result" and event.result is not None:
-                        _record_turn_metrics(profile.name, event.result, turn_started)
-                        state_update = _success_state(agent_id, handle.sandbox_name, event.result)
-                        await turn_cache.record(
-                            turn_key, meeting_id, agent_id, _serialisable(state_update)
-                        )
-                        return state_update
-        except Exception as exc:
-            MEETING_TURNS.labels(profile=profile.name, outcome="error").inc()
-            logger.error(
-                "sandbox_turn_failed",
-                agent_id=agent_id,
-                error=f"{type(exc).__name__}: {exc}",
-                exc_info=True,
-            )
-            return _failure_state(agent_id, role, f"{type(exc).__name__}: {exc}")
+        # One retry, and exactly one, against a replacement sandbox.
+        #
+        # A pod can be evicted, drained or OOM-killed between the lease being
+        # taken and the turn being issued, and the symptom is a transport error
+        # against an address that no longer answers. Nothing durable lives in a
+        # sandbox, so the recovery is to forget the lease, claim another, replay
+        # the bind and re-issue the turn -- the turn_results table is what makes
+        # re-issuing safe.
+        #
+        # Retrying more than once would be worse than not retrying at all: a
+        # warm pool that is genuinely empty would be hammered by every attendee
+        # in turn, and the meeting would stall instead of recording a failure
+        # the transcript can show.
+        last_error = "Sandbox closed the stream without a result"
+        for attempt in range(2):
+            try:
+                handle = await _lease_sandbox(meeting_id, agent_id, profile.name)
+            except SandboxUnavailableError as exc:
+                MEETING_TURNS.labels(profile=profile.name, outcome="no_sandbox").inc()
+                return _failure_state(agent_id, role, f"No sandbox available: {exc}")
 
-        return _failure_state(agent_id, role, "Sandbox closed the stream without a result")
+            try:
+                # Released by the meeting executor when the meeting ends, not
+                # here: this sandbox serves every turn this persona takes.
+                async with PersonaSandboxClient(handle.base_url) as client:
+                    if manager.needs_bind(meeting_id, agent_id):
+                        await client.bind(bind)
+                        manager.mark_bound(meeting_id, agent_id)
+                    async for event in client.stream_turn(turn):
+                        if event.type == "turn.error" and event.error is not None:
+                            # The sandbox answered; the turn failed inside it.
+                            # Not a lost pod, so not something a new pod fixes.
+                            MEETING_TURNS.labels(profile=profile.name, outcome="error").inc()
+                            return _failure_state(agent_id, role, event.error.message)
+                        if event.type == "turn.result" and event.result is not None:
+                            _record_turn_metrics(profile.name, event.result, turn_started)
+                            state_update = _success_state(
+                                agent_id, handle.sandbox_name, event.result
+                            )
+                            await turn_cache.record(
+                                turn_key, meeting_id, agent_id, _serialisable(state_update)
+                            )
+                            return state_update
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.error(
+                    "sandbox_turn_failed",
+                    agent_id=agent_id,
+                    sandbox=handle.sandbox_name,
+                    attempt=attempt,
+                    error=last_error,
+                    exc_info=True,
+                )
+                await manager.invalidate(meeting_id, agent_id)
+                if attempt == 0:
+                    continue
+                MEETING_TURNS.labels(profile=profile.name, outcome="error").inc()
+                return _failure_state(agent_id, role, last_error)
+
+            # A stream that ended without a result is not a transport failure;
+            # a replacement pod would end it the same way.
+            break
+
+        MEETING_TURNS.labels(profile=profile.name, outcome="error").inc()
+        return _failure_state(agent_id, role, last_error)
 
     return agent_node
+
+
+async def _lease_sandbox(meeting_id: str, agent_id: str, profile: str) -> Any:
+    """Take (or reuse) this persona's sandbox, timing only the real claims.
+
+    Reusing a lease costs nothing, so folding it into the acquisition histogram
+    would make the warm-pool claim latency look far better than it is -- the
+    metric exists to show whether the pool is actually warm.
+    """
+    reused = not manager.needs_bind(meeting_id, agent_id)
+    started = time.monotonic()
+    handle = await manager.acquire(
+        meeting_id=meeting_id,
+        agent_id=agent_id,
+        profile=profile,
+        warm_pool=f"persona-{profile}",
+    )
+    if not reused:
+        SANDBOX_ACQUIRE.labels(profile=profile).observe(time.monotonic() - started)
+        SANDBOXES_ACTIVE.labels(profile=profile).inc()
+    return handle
 
 
 def _record_turn_metrics(profile: str, result: Any, started: float) -> None:

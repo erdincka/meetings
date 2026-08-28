@@ -129,6 +129,26 @@ spec:
         ports:
           - {protocol: TCP, port: 8080}
       {{- end }}
+      {{- with (include "meetings.otlpEndpoint" $root) }}
+      {{- $otlpPort := regexFind ":[0-9]+$" . | trimPrefix ":" | default "4317" }}
+      # The trace collector. Added with the endpoint rather than always, because
+      # a rule naming a namespace that does not exist is a rule nobody can read
+      # the intent of later.
+      #
+      # Without this the sandbox is handed OTEL_EXPORTER_OTLP_ENDPOINT and then
+      # forbidden to reach it: every persona logs an endless retry loop against
+      # a collector it cannot see, and the claim that one turn renders as one
+      # trace across all three trust boundaries is quietly false -- the backend
+      # spans arrive, the sandbox spans never do. Configuration that tells a
+      # pod to talk to something the network forbids produces a symptom that
+      # looks nothing like a policy decision.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ $root.Values.observability.namespace }}
+        ports:
+          - {protocol: TCP, port: {{ $otlpPort }}}
+      {{- end }}
       # The apiserver, for every profile -- including those that may not execute
       # code.
       #
@@ -148,14 +168,16 @@ spec:
         ports:
           - {protocol: TCP, port: 443}
           - {protocol: TCP, port: 6443}
-      # The inference endpoint. NetworkPolicy matches addresses, not names.
-      {{- with $root.Values.inference.egressCIDRs }}
-      - to:
-          {{- range . }}
-          - ipBlock:
-              cidr: {{ . | quote }}
-          {{- end }}
-      {{- end }}
+      # No rule for the model endpoint, deliberately. Personas reach it through
+      # the backend's /internal/v1/llm proxy over the route already opened
+      # above, so a sandbox has no path off the cluster at all beyond the
+      # apiserver.
+      #
+      # This replaced an ipBlock list built from INFERENCE_EGRESS_CIDRS, which
+      # could not work for a hosted provider: NetworkPolicy matches addresses,
+      # a CDN-fronted endpoint has no stable ones, and the only way to make it
+      # work was 0.0.0.0/0 -- opening the whole internet to the least-trusted
+      # component in the system in order to reach one host.
 
   podTemplate:
     metadata:
@@ -197,14 +219,14 @@ spec:
               value: "http://{{ include "meetings.name" $root }}-backend.{{ $root.Release.Namespace }}.svc:8000"
             - name: SANDBOX_CAPABILITY_FILE
               value: /etc/sandbox/capabilities
-            - name: INFERENCE_API_KEY_FILE
-              value: /etc/sandbox/secrets/inference-api-key
+            {{- if $profile.needsMetricsDsn }}
             - name: METRICS_DSN_FILE
               value: /etc/sandbox/secrets/metrics-dsn
+            {{- end }}
             # Without this the trace stops at the backend, which is the least
             # interesting third of the work.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ $root.Values.observability.otlpEndpoint | quote }}
+              value: {{ include "meetings.otlpEndpoint" $root | quote }}
             - name: OTEL_SERVICE_NAME
               value: "meetings-persona-{{ $profile.name }}"
             - name: CORPUS_URL
@@ -217,9 +239,11 @@ spec:
             - name: capabilities
               mountPath: /etc/sandbox
               readOnly: true
+            {{- if $profile.needsMetricsDsn }}
             - name: secrets
               mountPath: /etc/sandbox/secrets
               readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
           readinessProbe:
@@ -233,35 +257,39 @@ spec:
             items:
               - key: capabilities
                 path: capabilities
+        {{- if $profile.needsMetricsDsn }}
         {{/*
-        Projected so a profile mounts only the credentials it needs. A baseline
-        sandbox has no metrics DSN on disk at all -- there is nothing there to
-        steal, quite apart from having no route to use it.
+        The only credential a persona sandbox now carries, and only the profiles
+        defined by holding it get the volume at all -- the others have no secret
+        mount whatsoever, not an empty one.
+        Not optional: a missing Secret should stop the pod rather than mount
+        nothing and let the tool report an outage it cannot tell from a real one.
         */}}
         - name: secrets
           projected:
             sources:
               - secret:
-                  name: {{ $root.Values.inference.existingSecret }}
-                  optional: true
-                  items:
-                    - key: {{ $root.Values.inference.apiKeyKey }}
-                      path: inference-api-key
-              {{- if $profile.needsMetricsDsn }}
-              # Not optional: this profile is defined by holding the metrics
-              # credential, so a missing Secret should stop the pod rather than
-              # mount nothing and let the tool report an outage it cannot
-              # distinguish from a real one.
-              - secret:
                   name: {{ $root.Values.sandbox.metricsSecret }}
                   items:
                     - key: dsn
                       path: metrics-dsn
-              {{- end }}
+        {{- end }}
         - name: tmp
           emptyDir: {}
-{{- if gt (int $profile.warmReplicas) 0 }}
 ---
+{{/*
+Unconditional, and that is the point. This was previously emitted only when
+warmReplicas > 0, which reads like a reasonable way to opt out of holding idle
+pods and is not: a sandbox is only ever obtained through a SandboxClaim, and
+SandboxClaim.spec carries `warmPoolRef` and no template ref, so a profile with
+no warm pool has no route to a sandbox at all. It stays selectable, so the
+supervisor picks it and every claim fails with "SandboxWarmPool not found" --
+one wasted turn per attempt, and no utterance.
+
+profiles.py now refuses warm_replicas < 1 at import, so this condition could
+never be false anyway. Emitting it unconditionally keeps the chart from
+advertising an opt-out that does not exist.
+*/}}
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
 metadata:
@@ -273,5 +301,4 @@ spec:
   replicas: {{ $profile.warmReplicas }}
   sandboxTemplateRef:
     name: {{ $sa }}
-{{- end }}
 {{- end }}

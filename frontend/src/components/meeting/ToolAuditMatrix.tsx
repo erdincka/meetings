@@ -110,6 +110,17 @@ export default function ToolAuditMatrix({
               {data.attendees.map((attendee) => (
                 <tr key={attendee.agent_id} className="border-t">
                   <td className="sticky left-0 bg-background p-1">
+                    {/* The whole security story is carried by icon colour and
+                        hover text, neither of which a screen reader or a
+                        keyboard-only operator can reach. State every cell in
+                        text as well; the visual layout is unchanged. */}
+                    <span className="sr-only">
+                      {attendee.display_name}, profile {attendee.profile},{" "}
+                      {attendee.can_execute_code
+                        ? "may claim a code-execution sandbox"
+                        : "refused code execution by RBAC"}
+                      .
+                    </span>
                     <Tooltip>
                       <TooltipTrigger render={<span className="cursor-help" />}>
                         <span className="font-medium">{attendee.title}</span>
@@ -136,7 +147,10 @@ export default function ToolAuditMatrix({
                     const state = stateFor(attendee.agent_id, tool, attendee.granted_tools)
                     const { icon: Icon, className, label } = CELL[state]
                     return (
-                      <td key={tool} className="p-1 text-center">
+                      <td key={tool} className="p-1 text-center" data-state={state}>
+                        <span className="sr-only">
+                          {shortTool(tool)}: {label}
+                        </span>
                         <Tooltip>
                           <TooltipTrigger render={<span className="inline-flex" />}>
                             <Icon className={`h-3.5 w-3.5 ${className}`} />

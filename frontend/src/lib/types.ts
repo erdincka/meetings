@@ -14,7 +14,7 @@ export interface SystemStatus {
   configured: boolean;
   ready: boolean;
   reasons: string[];
-  /** Always "environment" since Phase 1: credentials come from a Secret. */
+  /** Always "environment": credentials come from a Secret, never from a file. */
   config_source: string;
   /** kubectl command to create the missing Secret, when something is missing. */
   remediation: string | null;
@@ -74,7 +74,7 @@ export interface Role {
   challenge_style?: string | null;
   allowed_shared_library_access?: boolean;
   system_prompt?: string | null;
-  /** Tool grant. Phase 3 resolves this to a Kubernetes-enforced profile. */
+  /** Tool grant. Resolves server-side to a Kubernetes-enforced profile. */
   default_tools?: string[];
   ui_metadata?: Record<string, unknown>;
 }

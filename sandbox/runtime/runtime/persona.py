@@ -1,6 +1,6 @@
 """Prompt assembly for a bound persona.
 
-Phase 1 found roughly a dozen RoleAgent fields that were persisted, editable in
+Roughly a dozen RoleAgent fields were once persisted, editable in
 the UI, and read by nothing: responsibilities, kpis, objectives, seniority,
 risk_tolerance, challenge_style and system_prompt among them. Only display_name,
 title, department, summary, tone and collaboration_style ever reached a prompt.

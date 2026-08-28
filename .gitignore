@@ -61,9 +61,14 @@ helm/charts/
 .local-assets/
 deploy/demo/demo-job.rendered.yaml
 
-# Local lab configuration: contains real network addresses.
-deploy/k3s/lab.env
-deploy/charts/meetings/values-lab.yaml
-deploy/k3s/metallb-pool.yaml
-deploy/k3s/registry.yaml
-deploy/bootstrap/gatewayclass.yaml
+# Your cluster's settings and everything rendered from them: real addresses,
+# real hostnames, and in some setups the location of a model endpoint.
+deploy/cluster/cluster.env
+deploy/cluster/templates/metallb-pool.yaml
+deploy/cluster/templates/registry.yaml
+deploy/cluster/templates/gatewayclass.yaml
+deploy/charts/meetings/values-cluster.yaml
+
+# Coverage output
+backend/.coverage
+backend/htmlcov/
