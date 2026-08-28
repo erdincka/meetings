@@ -59,6 +59,96 @@ def _first_unheard(state: MeetingState, attendees: dict[str, Any]) -> str | None
     return None
 
 
+def _build_chair_llm(model_settings: Any) -> ChatOpenAI:
+    """The chat model the chair speaks through."""
+    llm_params: dict[str, Any] = {
+        # Ollama and other local providers serve an OpenAI-compatible API with
+        # no authentication, but the client will not construct without a key.
+        "api_key": model_settings.inference_api_key or "not-required",
+        "base_url": model_settings.inference_endpoint,
+        "model": model_settings.inference_model_name,
+        # Low temperature: the supervisor emits structured output, and drift
+        # here costs a whole turn.
+        "temperature": model_settings.supervisor_temperature,
+        "timeout": settings.LLM_TIMEOUT_SECONDS,
+        "max_tokens": SUPERVISOR_MAX_TOKENS,
+        # The OpenAI client retries 5xx twice by default, silently turning a 90s
+        # timeout into nearly six minutes of apparent hang. This node does its
+        # own bounded retry with logging, so leave the transport alone.
+        "max_retries": 0,
+    }
+
+    # Provider-specific and unset by default, because there is no portable
+    # value: Ollama accepts "none", OpenAI-style providers take low/medium/high
+    # and reject it, and a value a provider merely tolerates can still break
+    # structured output silently.
+    if settings.SUPERVISOR_REASONING_EFFORT:
+        llm_params["reasoning_effort"] = settings.SUPERVISOR_REASONING_EFFORT
+
+    if getattr(model_settings, "inference_ignore_tls", False):
+        from app.core.network import get_http_client, get_sync_http_client
+
+        llm_params["http_client"] = get_sync_http_client(ignore_tls=True)
+        llm_params["http_async_client"] = get_http_client(ignore_tls=True)
+
+    return ChatOpenAI(**llm_params)
+
+
+def _degrade_to_unheard(
+    state: MeetingState,
+    attendees: dict[str, Any],
+    current_turn: int,
+    meeting_id: Any,
+    error: str,
+) -> dict[str, Any] | None:
+    """Hand the turn to someone who has not spoken, rather than ending the meeting.
+
+    A chair that cannot get a usable reply out of the model is a reason to lose
+    a turn, not the meeting: the failure says nothing about whether the
+    attendees can still contribute. The provider fault that motivated this
+    returned a one-token empty completion intermittently, killing meetings
+    several turns in that were otherwise going fine.
+
+    Returns ``None`` once everyone has had a turn -- at which point concluding
+    is the honest outcome rather than a way to hide a fault.
+    """
+    unheard = _first_unheard(state, attendees)
+    if not unheard:
+        return None
+
+    logger.warning(
+        "supervisor_degraded_to_unheard_speaker",
+        meeting_id=meeting_id,
+        resolved=unheard,
+        error=error[:200],
+    )
+    note = (
+        "The chair could not reach a decision this turn "
+        f"({error[:160]}); continuing with an attendee who has not spoken."
+    )
+    content = "[Supervisor] Selected next speaker."
+    return {
+        "next_speaker": unheard,
+        "current_turn": current_turn + 1,
+        "reasoning": note,
+        "messages": [AIMessage(content=content)],
+        "event_log": [
+            {
+                "type": "supervisor_spoke",
+                "agent_id": "supervisor",
+                "content": content,
+                "reasoning": note,
+                "private_reasoning": note,
+            },
+            {
+                "type": "supervisor_selected_next_agent",
+                "agent_id": "supervisor",
+                "content": unheard,
+            },
+        ],
+    }
+
+
 async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[str, Any]:
     """Decides the next speaker or if the meeting should finish."""
     current_turn = state.get("current_turn", 0)
@@ -102,40 +192,7 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
     model_settings = config["configurable"]["model_settings"]
     attendees = config["configurable"]["attendees"]
 
-    llm_params = {
-        # Ollama and other local providers serve an OpenAI-compatible API with
-        # no authentication, but the client will not construct without a key.
-        "api_key": model_settings.inference_api_key or "not-required",
-        "base_url": model_settings.inference_endpoint,
-        "model": model_settings.inference_model_name,
-        # Low temperature: the supervisor emits structured output, and drift
-        # here costs a whole turn.
-        "temperature": model_settings.supervisor_temperature,
-        "timeout": settings.LLM_TIMEOUT_SECONDS,
-        # A speaker decision is an ID and a sentence. Without a cap, a small
-        # model can ramble for hundreds of tokens and, on some providers, run
-        # past the context window into a 500. Observed on Ollama: generation
-        # reached 320+ tokens before the server errored.
-        "max_tokens": SUPERVISOR_MAX_TOKENS,
-        # The OpenAI client retries 5xx twice by default, silently turning a 90s
-        # timeout into nearly six minutes of apparent hang. This node does its
-        # own bounded retry loop with logging, so leave the transport alone.
-        "max_retries": 0,
-    }
-
-    # Without this the chair never answers: gemma4 spends the whole 300-token
-    # budget reasoning and returns truncated JSON, which surfaces as three
-    # failed attempts and a meeting that ends before it starts.
-    if settings.SUPERVISOR_REASONING_EFFORT:
-        llm_params["reasoning_effort"] = settings.SUPERVISOR_REASONING_EFFORT
-
-    if getattr(model_settings, "inference_ignore_tls", False):
-        from app.core.network import get_http_client, get_sync_http_client
-
-        llm_params["http_client"] = get_sync_http_client(ignore_tls=True)
-        llm_params["http_async_client"] = get_http_client(ignore_tls=True)
-
-    llm = ChatOpenAI(**llm_params)
+    llm = _build_chair_llm(model_settings)
 
     attendee_options = []
     for agent_id, agent in attendees.items():
@@ -332,38 +389,9 @@ async def supervisor_node(state: MeetingState, config: RunnableConfig) -> dict[s
             # provider failure that motivated this returned a one-token empty
             # completion intermittently, killing meetings several turns in that
             # were otherwise going fine.
-            unheard = _first_unheard(state, attendees)
-            if unheard:
-                logger.warning(
-                    "supervisor_degraded_to_unheard_speaker",
-                    meeting_id=meeting_id,
-                    resolved=unheard,
-                    error=str(e)[:200],
-                )
-                note = (
-                    "The chair could not reach a decision this turn "
-                    f"({str(e)[:160]}); continuing with an attendee who has not spoken."
-                )
-                return {
-                    "next_speaker": unheard,
-                    "current_turn": current_turn + 1,
-                    "reasoning": note,
-                    "messages": [AIMessage(content="[Supervisor] Selected next speaker.")],
-                    "event_log": [
-                        {
-                            "type": "supervisor_spoke",
-                            "agent_id": "supervisor",
-                            "content": "[Supervisor] Selected next speaker.",
-                            "reasoning": note,
-                            "private_reasoning": note,
-                        },
-                        {
-                            "type": "supervisor_selected_next_agent",
-                            "agent_id": "supervisor",
-                            "content": unheard,
-                        },
-                    ],
-                }
+            degraded = _degrade_to_unheard(state, attendees, current_turn, meeting_id, str(e))
+            if degraded is not None:
+                return degraded
 
             # Everyone has had a turn and the chair still cannot answer. Now
             # concluding is the honest outcome rather than a way to hide a fault.
