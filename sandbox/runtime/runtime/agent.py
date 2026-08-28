@@ -2,15 +2,19 @@
 
 This is the code that moved out of the backend. Keeping the whole loop here --
 rather than RPC-ing individual tool calls back -- means model-chosen tool
-arguments never enter the backend process alongside the database engine and the
-master inference key, and a four-step turn costs one round trip instead of four.
+arguments never enter the backend process alongside the database engine, and a
+four-step turn costs one round trip instead of four.
+
+Model calls go back out through the backend's proxy, so this pod holds no
+provider credential: it authenticates with its own ServiceAccount token and the
+backend, which is not sandboxed, supplies the key.
 """
 
 from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 import structlog
@@ -41,13 +45,27 @@ logger = structlog.get_logger(__name__)
 class BoundPersona:
     """A sandbox bound to one attendee for the life of a meeting."""
 
-    def __init__(self, bind: PersonaBindRequest, api_key: str, backend: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        bind: PersonaBindRequest,
+        backend: httpx.AsyncClient,
+        token_reader: Callable[[], str] | None = None,
+    ) -> None:
         self.bind = bind
         self.backend = backend
         self.active_tools, self.refused_tools = resolve_grant(bind.granted_tools)
 
         llm_kwargs: dict[str, object] = {
-            "api_key": api_key or "not-required",
+            # The credential is this pod's ServiceAccount token, not a provider
+            # key -- `base_url` points at the backend's proxy, which holds the
+            # real key and validates this token by TokenReview. There is no
+            # provider credential in this pod to send.
+            #
+            # A placeholder here rather than the token itself: ChatOpenAI would
+            # capture it once, and kubelet rotates it out from under a sandbox
+            # that outlives its validity. The event hook below re-reads it per
+            # request instead.
+            "api_key": "sandbox-serviceaccount",
             "base_url": bind.model.endpoint,
             "model": bind.model.model_name,
             "temperature": bind.model.temperature,
@@ -64,8 +82,20 @@ class BoundPersona:
         # so it is only sent when configured.
         if bind.model.reasoning_effort:
             llm_kwargs["reasoning_effort"] = bind.model.reasoning_effort
-        if bind.model.ignore_tls:
-            llm_kwargs["http_async_client"] = httpx.AsyncClient(verify=False, timeout=60)
+
+        async def _authorize(request: httpx.Request) -> None:
+            token = token_reader() if token_reader else ""
+            if token:
+                request.headers["authorization"] = f"Bearer {token}"
+
+        # Must be async: httpx awaits event hooks on an AsyncClient, so a sync
+        # hook returns None and every request dies with "object NoneType can't
+        # be used in 'await' expression".
+        llm_kwargs["http_async_client"] = httpx.AsyncClient(
+            verify=not bind.model.ignore_tls,
+            timeout=bind.model.timeout_seconds,
+            event_hooks={"request": [_authorize]},
+        )
         self.llm = ChatOpenAI(**llm_kwargs)  # type: ignore[arg-type]
 
     def _build_tools(self) -> list[BaseTool]:

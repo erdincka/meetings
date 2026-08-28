@@ -1,8 +1,9 @@
 """Settings update contract.
 
-The security property under test: credentials are environment-only. Before
-Phase 1 the settings payload accepted inference_api_key and wrote it to a
-plaintext file, so this is the boundary that replaced that behaviour.
+The security property under test: credentials are environment-only. The
+settings payload once accepted inference_api_key and wrote it to a plaintext
+file; this is the boundary that replaced that, and a 422 rather than a silently
+ignored field is the part worth keeping.
 """
 
 from __future__ import annotations

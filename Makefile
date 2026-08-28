@@ -1,44 +1,45 @@
-# Agentic Meetings -- developer entrypoints.
+# Agentic Meetings -- developer and operator entrypoints.
 # Every target is idempotent and safe to re-run.
 
 SHELL          := /bin/bash
-# Rancher Desktop and Homebrew shims are not on PATH in a non-login shell, so a
-# recipe would silently fall back to "command not found" -- which chart-validate
-# then reported as a clean run over zero resources.
+# Homebrew and Rancher Desktop shims are not on PATH in a non-login shell, so a
+# recipe can silently fall back to "command not found" -- which chart-validate
+# then reports as a clean run over zero resources.
 export PATH := $(HOME)/.rd/bin:/opt/homebrew/bin:$(PATH)
-KCTX           ?= k3s-lab
-# Network-specific values live in deploy/k3s/lab.env, which is gitignored.
-LAB_ENV        := deploy/k3s/lab.env
-BUILDER        ?= ubuntu@$(shell sed -n 's/^BUILDER_IP=//p' $(LAB_ENV) 2>/dev/null)
-REGISTRY       ?= $(shell sed -n 's/^REGISTRY_IP=//p' $(LAB_ENV) 2>/dev/null):5000
-# Source is synced here and built natively: the laptop is arm64 and the nodes
-# are x86_64, and cross-building Python/Node images under emulation is slow
-# enough to hurt the inner loop.
-BUILDER_DIR    ?= /home/ubuntu/meetings
-KUBECTL        ?= kubectl --context $(KCTX)
-HELM           ?= helm --kube-context $(KCTX)
-AGENT_SANDBOX_VER ?= v0.5.6
+
+# Cluster-specific values live in deploy/cluster/cluster.env, which is
+# gitignored. Copy the example and edit it before anything else.
+CLUSTER_ENV    := deploy/cluster/cluster.env
+KCTX           ?=
+KUBECTL        := kubectl$(if $(KCTX), --context $(KCTX),)
+HELM           := helm$(if $(KCTX), --kube-context $(KCTX),)
+
+REGISTRY       ?= $(shell sed -n 's/^IMAGE_REGISTRY=//p' $(CLUSTER_ENV) 2>/dev/null)
+BUILDER        ?= $(shell sed -n 's/^BUILDER=//p' $(CLUSTER_ENV) 2>/dev/null)
+BUILDER_DIR    ?= $(shell sed -n 's/^BUILDER_DIR=//p' $(CLUSTER_ENV) 2>/dev/null)
+
+TEMPLATES := deploy/cluster/templates/metallb-pool.yaml.tmpl \
+             deploy/cluster/templates/registry.yaml.tmpl \
+             deploy/cluster/templates/gatewayclass.yaml.tmpl \
+             deploy/charts/meetings/values-cluster.yaml.tmpl
 
 .DEFAULT_GOAL := help
-.PHONY: help node-image kind-up kind-down bootstrap smoke smoke-gvisor smoke-sandbox \
-        smoke-pgvector smoke-netpol deploy deploy-observed images render lint test check \
-        security migrate seed demo observability observability-down status
+.PHONY: help preflight prerequisites smoke smoke-gvisor smoke-sandbox smoke-netpol \
+        smoke-pgvector status render images deploy deploy-observed seed demo \
+        operator-token verify-images observability observability-down \
+        lint test test-integration test-frontend chart-validate check migrate-check security
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
-	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
-cluster-up: ## Provision the VMs, install k3s and the platform (idempotent)
-	bash deploy/k3s/bootstrap.sh all
-	@$(MAKE) smoke
+# ---------------------------------------------------------------- cluster
 
-cluster-down: ## Stop the lab VMs (does not destroy them)
-	@. ./$(LAB_ENV) && ssh -o BatchMode=yes "$$PVE_HOST" \
-	  'for id in 1030 1031 1032 1033; do qm stop $$id 2>/dev/null || true; done'
-	@echo "lab VMs stopped"
+preflight: ## Check that your cluster meets the requirements
+	@bash deploy/cluster/preflight.sh
 
-bootstrap: ## Install/refresh the platform components only
-	bash deploy/k3s/bootstrap.sh platform
+prerequisites: ## Install missing platform components (see docs/requirements.md)
+	@bash deploy/cluster/install-prerequisites.sh all
 
 smoke: smoke-gvisor smoke-netpol smoke-sandbox ## Run every fail-fast gate
 
@@ -71,32 +72,21 @@ status: ## Show cluster state at a glance
 
 # ---------------------------------------------------------------- app
 
-render: ## Render templates from deploy/k3s/lab.env
-	@python3 scripts/render.py \
-	  deploy/k3s/metallb-pool.yaml.tmpl \
-	  deploy/k3s/registry.yaml.tmpl \
-	  deploy/bootstrap/gatewayclass.yaml.tmpl \
-	  deploy/charts/meetings/values-lab.yaml.tmpl
+render: ## Render templates from deploy/cluster/cluster.env
+	@python3 scripts/render.py $(TEMPLATES)
 
-images: render ## Build images on the builder and push to the registry
+verify-images: ## Prove the published images came from this repo's CI, unaltered
+	@bash scripts/verify-images.sh
+
+images: render ## Build the five images and push them to your registry
 	bash sandbox/runtime/sync-shared.sh
-	rsync -az --delete \
-	  --exclude '.git' --exclude '**/node_modules' --exclude '**/.venv' \
-	  --exclude '**/__pycache__' --exclude '.local-assets' --exclude '**/.next' \
-	  ./ $(BUILDER):$(BUILDER_DIR)/
-	@ssh -o BatchMode=yes $(BUILDER) 'cd $(BUILDER_DIR) && \
-	  R=$(REGISTRY); \
-	  docker build -q --target runtime -t $$R/meetings-backend:latest backend && \
-	  docker build -q --target runtime -t $$R/meetings-frontend:latest frontend && \
-	  docker build -q --target runtime -t $$R/meetings-persona-runtime:latest sandbox/runtime && \
-	  docker build -q -t $$R/meetings-exec-python:latest sandbox/exec-python && \
-	  docker build -q -t $$R/meetings-corpus:latest sandbox/corpus' >/dev/null
-	@bash scripts/image-tags.sh --push
+	@bash scripts/build-images.sh
 
 deploy: render ## Install/upgrade the app (migrations run as a pre-upgrade hook)
+	@bash scripts/runtime-secret.sh
 	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
-	  $(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
-	    -f deploy/charts/meetings/values-lab.yaml \
+	  $(HELM) upgrade --install meetings deploy/charts/meetings -n meetings --create-namespace \
+	    -f deploy/charts/meetings/values-cluster.yaml \
 	    --set backend.image=$$BACKEND_TAG \
 	    --set frontend.image=$$FRONTEND_TAG \
 	    --set sandbox.runtimeImage=$$RUNTIME_TAG \
@@ -104,14 +94,51 @@ deploy: render ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	    --set corpus.image=$$CORPUS_TAG \
 	    --wait --timeout 8m
 
+# Kept so the command in older notes still works, but it is now the same deploy.
+# Observability used to be turned on by these two --set flags, which meant a
+# later plain `make deploy` silently turned it back off: the ServiceMonitor was
+# deleted, tracing stopped, and every Grafana panel read "no data" with nothing
+# in an error state anywhere. It is OBSERVABILITY_ENABLED in cluster.env now, so
+# the two commands cannot disagree about it.
+deploy-observed: deploy ## Deprecated alias for `deploy` (see OBSERVABILITY_ENABLED)
+	@echo
+	@echo "note: deploy-observed is now identical to deploy."
+	@echo "      Tracing and scraping follow OBSERVABILITY_ENABLED in deploy/cluster/cluster.env."
+
+seed: ## Load reference personas, documents and templates
+	$(KUBECTL) -n meetings exec deploy/meetings-backend -- \
+	  python -c "import asyncio; from scripts.seed import seed_data; asyncio.run(seed_data())"
+
+operator-token: ## Print the operator and viewer tokens for this deployment
+	@echo -n "operator: "; $(KUBECTL) -n meetings get secret meetings-auth \
+	  -o jsonpath='{.data.OPERATOR_TOKEN}' | base64 -d; echo
+	@echo -n "viewer:   "; $(KUBECTL) -n meetings get secret meetings-auth \
+	  -o jsonpath='{.data.VIEWER_TOKEN}' | base64 -d; echo
+
 demo: ## Run the least-privilege demo meeting to completion (in-cluster)
-	@python3 -c "from pathlib import Path; \
+	@# The driver runs from the same image as the backend it drives, so the two
+	@# are never a different build.
+	@# export, not a bare assignment: the renderer below is a separate process
+	@# and reads this from the environment, so without it `make demo` dies on
+	@# KeyError: 'BACKEND_IMAGE' before it ever reaches the cluster.
+	@export BACKEND_IMAGE=$$($(KUBECTL) -n meetings get deploy meetings-backend \
+	  -o jsonpath='{.spec.template.spec.containers[0].image}'); \
+	  python3 -c "import os; from pathlib import Path; \
 	  s=Path('deploy/demo/run-demo.py').read_text(); \
 	  i='\n'.join('    '+l if l.strip() else '' for l in s.splitlines()); \
 	  t=Path('deploy/demo/demo-job.yaml').read_text(); \
-	  Path('deploy/demo/demo-job.rendered.yaml').write_text(t.replace('{{SCRIPT}}', i))"
+	  t=t.replace('{{SCRIPT}}', i).replace('{{BACKEND_IMAGE}}', os.environ['BACKEND_IMAGE']); \
+	  Path('deploy/demo/demo-job.rendered.yaml').write_text(t)"
 	$(KUBECTL) delete job meetings-demo -n meetings --ignore-not-found
 	$(KUBECTL) apply -f deploy/demo/demo-job.rendered.yaml
+	@# `kubectl wait` fails outright on a selector that matches nothing yet
+	@# ("no matching resources found") rather than waiting for it to appear, and
+	@# the Job's pod does not exist the instant after apply. So wait for the pod
+	@# to exist first, then for it to be ready.
+	@for i in $$(seq 1 30); do \
+	  [ -n "$$($(KUBECTL) -n meetings get pod -l job-name=meetings-demo -o name 2>/dev/null)" ] && break; \
+	  sleep 2; \
+	done
 	$(KUBECTL) -n meetings wait --for=condition=Ready pod -l job-name=meetings-demo --timeout=120s
 	$(KUBECTL) -n meetings logs -f job/meetings-demo
 
@@ -120,23 +147,6 @@ observability: ## Install Prometheus, Grafana and Tempo (optional, ~1.5GB)
 
 observability-down: ## Remove the observability stack
 	@bash deploy/bootstrap/40-observability.sh remove
-
-deploy-observed: ## Deploy with tracing and scraping enabled
-	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
-	  $(HELM) upgrade --install meetings deploy/charts/meetings -n meetings \
-	    -f deploy/charts/meetings/values-lab.yaml \
-	    --set backend.image=$$BACKEND_TAG \
-	    --set frontend.image=$$FRONTEND_TAG \
-	    --set sandbox.runtimeImage=$$RUNTIME_TAG \
-	    --set sandbox.execImage=$$EXEC_TAG \
-	    --set corpus.image=$$CORPUS_TAG \
-	    --set observability.serviceMonitor=true \
-	    --set observability.otlpEndpoint=http://tempo.observability.svc:4317 \
-	    --wait --timeout 8m
-
-seed: ## Load reference personas, documents and templates
-	$(KUBECTL) -n meetings exec deploy/meetings-backend -- \
-	  python -c "import asyncio; from scripts.seed import seed_data; asyncio.run(seed_data())"
 
 # ---------------------------------------------------------------- quality
 
@@ -152,14 +162,26 @@ lint: ## ruff + format + mypy + eslint + tsc + helm/kubeconform
 	bash scripts/generate-profile-values.sh && git diff --exit-code deploy/charts/meetings/values.yaml
 	$(MAKE) chart-validate
 
-test: ## Backend + sandbox runtime tests with coverage
+test: ## Unit tests: backend, sandbox runtime, frontend
 	cd backend && uv run pytest tests/unit -v --cov=app --cov-report=term-missing
 	cd sandbox/runtime && uv run pytest tests -v
+	cd frontend && npm test
+
+test-integration: ## Backend integration tests (needs Postgres; see the target's comment)
+	@# Skipped with a reason if no database is reachable, so this stays runnable
+	@# on a laptop. To provide one:
+	@#   docker run --rm -d --name meetings-test-pg -p 5432:5432 \
+	@#     -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
+	@#     pgvector/pgvector:pg17
+	cd backend && uv run pytest tests/integration -v
+
+test-frontend: ## Frontend tests only
+	cd frontend && npm test
 
 chart-validate: ## Render every values profile and validate against API schemas
 	@command -v helm >/dev/null || { echo "helm not found on PATH"; exit 1; }
 	@command -v kubeconform >/dev/null || { echo "kubeconform not found on PATH"; exit 1; }
-	@set -e; for f in values.yaml values-lab.yaml; do \
+	@set -e; for f in values.yaml values-cluster.yaml; do \
 	  echo ">> $$f"; \
 	  helm template meetings deploy/charts/meetings -n meetings \
 	    -f deploy/charts/meetings/$$f \
@@ -169,7 +191,7 @@ chart-validate: ## Render every values profile and validate against API schemas
 	      -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'; \
 	done
 
-check: lint test security ## Everything CI runs
+check: lint test test-integration security ## Everything CI runs
 
 migrate-check: ## Fail if the ORM has drifted from the migrations
 	cd backend && uv run alembic check

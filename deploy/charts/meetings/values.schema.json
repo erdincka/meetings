@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Agentic Meetings values",
+  "description": "Helm ignores values keys no template reads, so a renamed or mistyped key in values-cluster.yaml applies nothing and reports success. That is how observability.enabled, written as observability.serviceMonitor, left scraping off while the deploy looked clean. The two blocks rendered from cluster.env are closed to unknown keys for that reason; the rest stays open so --set and downstream overrides keep working.",
+  "type": "object",
+  "properties": {
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "host": { "type": "string" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string" },
+            "redirect": { "type": "boolean" },
+            "issuerRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string" },
+                "kind": { "type": "string", "enum": ["ClusterIssuer", "Issuer"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "prometheusRelease": { "type": "string" },
+        "otlpEndpoint": { "type": "string" },
+        "gatewayHost": { "type": "string" },
+        "namespace": { "type": "string" }
+      }
+    }
+  }
+}

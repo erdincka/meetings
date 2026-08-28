@@ -1,10 +1,10 @@
 # Envoy Gateway installs the Gateway API CRDs and its controller, but does not
 # create a GatewayClass -- that is left to the platform owner.
 #
-# This is precisely what was missing on the k3s cluster this project first ran
-# on: the Gateway API CRDs were present (installed by Traefik) but there was no
-# GatewayClass and Traefik was never started with --providers.kubernetesgateway,
-# so the whole Gateway API surface was inert.
+# Worth knowing because of how its absence fails: the CRDs are present,
+# `kubectl get gateways` works, and nothing at all is watching. A Gateway API
+# surface with no GatewayClass is inert and looks installed, which is why
+# `make preflight` checks for one separately.
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
@@ -19,11 +19,9 @@ spec:
 ---
 # The data-plane Service shape.
 #
-# On the previous kind cluster this pinned a NodePort, because kind has no
-# LoadBalancer implementation and the port had to line up with a host port
-# mapping. MetalLB assigns a real address from the LAN, so the Gateway is simply
-# browsable from any machine on the network and the port-mapping workaround is
-# gone.
+# A LoadBalancer with a pinned address, so the app has a stable URL. On a cluster
+# with no LoadBalancer implementation, change the type to NodePort here (or
+# install MetalLB) -- nothing else in the chart depends on which it is.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
@@ -35,8 +33,9 @@ spec:
     kubernetes:
       envoyService:
         type: LoadBalancer
-        # Pinned so the address does not move between rebuilds; it must sit
-        # inside the MetalLB pool declared in deploy/k3s/metallb-pool.yaml.
+        # Pinned so the address does not move between rebuilds. It must sit
+        # inside whatever pool your LoadBalancer allocates from -- with MetalLB,
+        # the one in deploy/cluster/templates/metallb-pool.yaml.
         patch:
           type: StrategicMerge
           value:

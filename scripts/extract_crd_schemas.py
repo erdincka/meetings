@@ -23,21 +23,28 @@ def main(out_dir: str, context: str) -> int:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
+    # An empty context means "whatever kubectl is already pointed at", which is
+    # the right default now that the cluster belongs to whoever is running this.
+    ctx = ["--context", context] if context else []
+
     listing = subprocess.run(
-        ["kubectl", "--context", context, "get", "crd", "-o", "name"],
+        ["kubectl", *ctx, "get", "crd", "-o", "name"],
         capture_output=True,
         text=True,
         check=True,
     )
     names = [n for n in listing.stdout.split() if GROUP_SUFFIX in n]
     if not names:
-        print(f"no {GROUP_SUFFIX} CRDs found in context {context}", file=sys.stderr)
+        print(
+            f"no {GROUP_SUFFIX} CRDs found in {context or 'the current context'}",
+            file=sys.stderr,
+        )
         return 1
 
     written = 0
     for name in names:
         raw = subprocess.run(
-            ["kubectl", "--context", context, "get", name, "-o", "json"],
+            ["kubectl", *ctx, "get", name, "-o", "json"],
             capture_output=True,
             text=True,
             check=True,
@@ -62,5 +69,6 @@ def main(out_dir: str, context: str) -> int:
 
 
 if __name__ == "__main__":
+    # No context means the current one: main() omits --context when it is empty.
     raise SystemExit(main(sys.argv[1] if len(sys.argv) > 1 else "deploy/schemas",
-                          sys.argv[2] if len(sys.argv) > 2 else "kind-meetings"))
+                          sys.argv[2] if len(sys.argv) > 2 else ""))

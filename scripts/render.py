@@ -1,31 +1,46 @@
-"""Render a ${VAR} template against deploy/k3s/lab.env.
+"""Render a ${VAR} template against deploy/cluster/cluster.env.
 
 A deliberately small substitute for envsubst, which is not installed on macOS by
 default. Unknown variables are an error rather than being silently replaced with
 an empty string -- a NetworkPolicy CIDR or a registry address that quietly
 became "" is far harder to diagnose than a failed render.
 
-    scripts/render.py deploy/k3s/metallb-pool.yaml.tmpl
+Two forms beyond a bare ${VAR}, neither of which envsubst has -- which is most
+of why this exists rather than a one-line shell alias:
+
+`${VAR:list}` expands a comma- or space-separated setting into a YAML flow
+sequence. A setting documented as taking several values, interpolated into a
+single `- "${VAR}"`, produces one item containing a comma -- and an ipBlock CIDR
+of "10.0.0.1/32,10.0.0.2/32" is rejected far from the file that caused it.
+
+`${VAR:-default}` makes a setting optional. Without it, every new template
+variable is a breaking change for everyone whose cluster.env predates it: the
+render aborts on a name they have never heard of, over a feature they did not
+ask for. Required settings stay required -- omitting the default is what marks
+them so.
+
+    scripts/render.py deploy/cluster/templates/metallb-pool.yaml.tmpl
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-ENV_FILE = REPO / "deploy" / "k3s" / "lab.env"
-EXAMPLE = REPO / "deploy" / "k3s" / "lab.env.example"
-PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
+ENV_FILE = REPO / "deploy" / "cluster" / "cluster.env"
+EXAMPLE = REPO / "deploy" / "cluster" / "cluster.env.example"
+PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)(:list)?(?::-([^}]*))?\}")
 
 
 def load_env() -> dict[str, str]:
     if not ENV_FILE.exists():
         sys.exit(
             f"{ENV_FILE.relative_to(REPO)} not found.\n"
-            f"Copy {EXAMPLE.relative_to(REPO)} to it and edit for your network."
+            f"Copy {EXAMPLE.relative_to(REPO)} to it and edit it for your cluster."
         )
     env: dict[str, str] = {}
     for line in ENV_FILE.read_text().splitlines():
@@ -43,17 +58,23 @@ def render(template: Path, env: dict[str, str]) -> str:
     missing: set[str] = set()
 
     def substitute(match: re.Match[str]) -> str:
-        name = match.group(1)
-        if name not in env:
+        name, modifier, fallback = match.group(1), match.group(2), match.group(3)
+        if name in env:
+            value = env[name]
+        elif fallback is not None:
+            value = fallback
+        else:
             missing.add(name)
             return match.group(0)
-        return env[name]
+        if modifier == ":list":
+            # json.dumps, not hand-rolled quoting: a YAML flow sequence of
+            # double-quoted scalars is valid JSON, and json escapes correctly.
+            return json.dumps(re.split(r"[,\s]+", value.strip()) if value.strip() else [])
+        return value
 
     out = PLACEHOLDER.sub(substitute, template.read_text())
     if missing:
-        sys.exit(
-            f"{template.name}: undefined in lab.env: {', '.join(sorted(missing))}"
-        )
+        sys.exit(f"{template.name}: undefined in cluster.env: {', '.join(sorted(missing))}")
     return out
 
 

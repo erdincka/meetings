@@ -4,8 +4,9 @@ A fifteen-minute walkthrough. The order matters: it builds from "this is a
 multi-agent meeting" to "the boundary is real and the API server enforces it",
 and every claim is provoked live rather than asserted.
 
-Assumes a running cluster (`make deploy`) and a seeded database
-(`make demo-seed`). Substitute your gateway address for `meetings.lab`.
+Assumes a deployed, seeded cluster (`make deploy && make seed`) and the
+operator token from `make operator-token`. Substitute your own gateway address
+for `<gateway>` throughout.
 
 ---
 
@@ -15,11 +16,13 @@ Warm the pools and the model. A cold gVisor pod takes seconds and a cold model
 takes longer; neither is interesting to watch.
 
 ```bash
-kubectl -n meetings-sandboxes get pods
+make preflight                            # the controls still hold
+kubectl -n meetings-sandboxes get pods    # every persona pod 1/1 Running
 ```
 
-Expect every persona pod `1/1 Running`. Then open two terminals beside the
-browser: one for `kubectl`, one for logs.
+Then open two terminals beside the browser: one for `kubectl`, one for logs, and
+sign in to the UI before the audience arrives — a token prompt is not the first
+thing you want on screen.
 
 ---
 
@@ -38,8 +41,9 @@ capability profile — visible in the **Capabilities** tab of the persona editor
 and per-meeting at:
 
 ```bash
-curl -s -H 'Host: meetings.lab' \
-  "http://<gateway>/api/v1/meetings/<meeting-id>/capabilities" | jq '.data.attendees[] | {display_name, profile, can_execute_code}'
+curl -s -H "Authorization: Bearer $(make -s operator-token | sed -n 's/^operator: //p')" \
+  "http://<gateway>/api/v1/meetings/<meeting-id>/capabilities" \
+  | jq '.data.attendees[] | {display_name, profile, can_execute_code}'
 ```
 
 The Finance Director resolves to `quant` and may execute code. The General
@@ -143,17 +147,44 @@ flatters it.
 
 ---
 
-## 6. Provider portability (1 min)
+## 6. Portability (2 min)
 
-Same meeting, different inference backend:
+Two claims, both one command each.
+
+**Any inference provider.** Point at a different OpenAI-compatible endpoint and
+redeploy; nothing in the application changes:
 
 ```bash
-helm upgrade --install meetings deploy/charts/meetings -n meetings \
-  -f deploy/charts/meetings/values-local.yaml \
-  -f deploy/charts/meetings/values-ollama.yaml
+helm upgrade meetings deploy/charts/meetings -n meetings \
+  -f deploy/charts/meetings/values-cluster.yaml \
+  --set inference.endpoint=https://... --set inference.modelName=...
 ```
 
-Nothing in the application changes.
+**Any conformant cluster.** The same chart, and a check that says whether the
+cluster can actually support the controls rather than assuming it:
+
+```bash
+make preflight
+```
+
+Worth showing if the audience is a platform team — it is the difference between
+a demo that runs here and a pattern they can adopt.
+
+---
+
+## 7. The supply chain (1 min)
+
+For an audience that will ask how the images got there:
+
+```bash
+make verify-images
+```
+
+Signed by this repository's CI, keyless — the identity is the workflow, so there
+is no private key to leak — with a SLSA provenance attestation naming the commit
+each image was built from. Signatures are over the digest, never the tag: a tag
+can be moved, and a signature over a movable name proves nothing about the bytes
+anyone pulls.
 
 ---
 
@@ -169,5 +200,13 @@ app startup and the model loads on first use. Warm both before demoing.
 valid speaker. The supervisor retries and then falls back to whoever has not
 spoken; if it still finishes, restart the meeting rather than explaining it.
 
-**Nothing schedules.** Check node pressure -- sandboxes have real requests and
+**Nothing schedules.** Check node pressure — sandboxes have real requests and
 the warm pools hold several pods idle.
+
+**The UI asks for a token.** `make operator-token`. Sign in before the audience
+arrives.
+
+**A control does not behave as described.** Run `make preflight`. A RuntimeClass
+that fell back to runc, or a CNI that accepts NetworkPolicy without enforcing
+it, both look completely healthy from every other angle — which is exactly why
+that command exists.

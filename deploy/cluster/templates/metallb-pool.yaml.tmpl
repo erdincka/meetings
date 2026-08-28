@@ -1,0 +1,25 @@
+# Real LAN addresses for LoadBalancer Services, on a bare-metal cluster.
+#
+# Optional: skip this entirely if your cluster already assigns LoadBalancer
+# addresses. Where it does not, the alternative is a NodePort mapped to a host
+# port, which works and is nothing like how ingress behaves anywhere else.
+#
+# The range MUST sit outside your DHCP pool. An overlap produces address
+# conflicts that present as intermittent, unexplained outages rather than as
+# anything network-shaped.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: lan
+  namespace: metallb-system
+spec:
+  addresses:
+    - ${METALLB_RANGE}
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: lan
+  namespace: metallb-system
+spec:
+  ipAddressPools: [lan]

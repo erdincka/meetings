@@ -1,18 +1,13 @@
 # Agentic Meetings
 
-A multi-agent meeting simulator that runs each AI participant inside its own
-**gVisor-isolated Kubernetes sandbox**, where what each agent is allowed to do
-is enforced by Kubernetes — ServiceAccounts, RBAC, NetworkPolicy and per-template
+A multi-agent meeting simulator where each AI participant runs inside its own
+**gVisor-isolated Kubernetes sandbox**, and what each agent is allowed to do is
+enforced by Kubernetes — ServiceAccounts, RBAC, NetworkPolicy and per-template
 Secrets — rather than by asking it nicely in a prompt.
 
-Built on the [Kubernetes Agent Sandbox](https://agent-sandbox.sigs.k8s.io/)
-project (SIG Apps), CloudNativePG, and Gateway API.
-
-> **Status:** Phases 0–5 are complete. Every agent turn executes inside its own
-> gVisor-isolated Sandbox pod, least privilege is enforced across five
-> Kubernetes-native layers, every persona field reaches the model, and all
-> three tiers are traced. Phase 6 — integration/e2e depth, operator auth,
-> signed multi-arch images — is next. See [Roadmap](#roadmap).
+A reference implementation of [Kubernetes Agent
+Sandbox](https://agent-sandbox.sigs.k8s.io/) (SIG Apps), on CloudNativePG and
+Gateway API.
 
 ## The idea
 
@@ -20,7 +15,7 @@ A supervisor agent runs a meeting: it picks who speaks next, each participant
 argues from their role using retrieval over company documents, and the meeting
 produces a transcript and conclusions.
 
-That much is an LLM demo. The interesting part is what happens underneath.
+That much is an LLM demo. The interesting part is underneath.
 
 Each attendee's reasoning loop executes in a **separate sandbox pod** under a
 gVisor kernel. Agents that need to analyse data write Python, and that code runs
@@ -36,8 +31,8 @@ persona can reach is decided by the cluster, at five layers:
 | RBAC | Only some ServiceAccounts may claim an exec sandbox | The agent itself — with a 403 from the apiserver |
 
 The demonstrable moment: a General Counsel persona asked to run code gets a
-**403 from the Kubernetes API server**, surfaced in the UI's audit matrix.
-Least privilege you can screenshot, not least privilege you assert.
+**403 from the Kubernetes API server**, surfaced in the UI's audit matrix. Least
+privilege you can screenshot, not least privilege you assert.
 
 ## Architecture
 
@@ -71,130 +66,154 @@ Two design rules make this coherent:
    need goes through a scoped internal API; the one exception is a read-only DSN
    for a separate metrics schema, mounted only where it is granted.
 
-## Quick start
+## Getting started
 
-Requires Docker (any provider), and an Apple Silicon or amd64 host.
+This deploys onto a Kubernetes cluster you already have. Start by finding out
+whether it can support the controls:
 
 ```bash
-brew install kubectl helm kubeconform uv
-cp deploy/k3s/lab.env.example deploy/k3s/lab.env   # then edit for your network
-make cluster-up   # provisions the VMs, installs k3s + gVisor + the platform, runs the gates
-make images       # builds on the amd64 builder, pushes to the in-cluster registry
-make deploy       # installs the chart; migrations run as a pre-upgrade hook
-make seed         # loads reference personas, documents and templates
+brew install kubectl helm kubeconform cosign uv
+cp deploy/cluster/cluster.env.example deploy/cluster/cluster.env   # then edit
+make preflight
 ```
 
-The cluster is three k3s nodes plus a builder on Proxmox — see
-[deploy/k3s/README.md](deploy/k3s/README.md) for the layout and why it replaced
-a laptop-hosted `kind` cluster. Once deployed the app is on a real LAN address
-rather than behind a port-forward. Network-specific values live in `lab.env`,
-which is gitignored — the committed example uses documentation addresses and
-will not work anywhere unedited.
+`preflight` reports what is missing and — for the two requirements that can be
+present and inert — whether the thing actually works. Anything it flags,
+[docs/requirements.md](docs/requirements.md) explains, and this installs:
 
-`make cluster-up` refuses to continue unless three gates pass:
+```bash
+deploy/cluster/install-prerequisites.sh all      # MetalLB, Gateway, CNPG, Agent Sandbox
+deploy/cluster/install-prerequisites.sh gvisor   # needs node access; see the docs
+```
 
-- **`smoke-gvisor`** asserts `/proc/version` reports gVisor. A misconfigured
-  RuntimeClass handler *silently falls back to runc* on some setups, producing a
-  green pod with no isolation — a fake security story that looks exactly like a
-  real one. Never weaken this to a readiness check.
-- **`smoke-sandbox`** drives a real `Sandbox` through the controller and reaches
-  it over cluster DNS, exercising the CRD, controller, warm path and SDK before
-  a line of application code is involved.
-- **`smoke-netpol`** asserts a deny-all NetworkPolicy actually blocks traffic.
-  Every CNI accepts policy objects; not every CNI enforces them, and one that
-  quietly ignores them looks identical from the outside.
+Then verify the images came from this repository's CI, and deploy:
+
+```bash
+make verify-images
+make deploy
+make seed
+make operator-token    # the token the UI asks for
+```
+
+Two settings in `cluster.env` decide the rest. `APP_DOMAIN` gives the deployment
+its names — `meetings.${APP_DOMAIN}` for the app and `grafana.${APP_DOMAIN}` for
+Grafana, both served by one Gateway on one address, so a wildcard DNS record
+covers both. `OBSERVABILITY_ENABLED` turns scraping, tracing and the Grafana
+listener on together; `make observability` installs the stack they point at.
+
+### The requirements, in short
+
+| Requirement | Why |
+|---|---|
+| Kubernetes 1.31+ | `ImageVolume`, which is how pgvector reaches Postgres |
+| A RuntimeClass with kernel-level isolation | The boundary the whole design rests on |
+| Agent Sandbox v0.5.6+ | `Sandbox`, `SandboxClaim`, `SandboxTemplate`, `SandboxWarmPool` |
+| CloudNativePG 1.30+ | Postgres 18 with pgvector as a declarative extension |
+| Gateway API + a live GatewayClass | The WebSocket upgrade the transcript stream needs |
+| A CNI that **enforces** NetworkPolicy | Two of the five enforcement layers |
+
+Roughly 8 CPU and 16 GiB allocatable for a full demo, most of it warm-pool
+sandboxes sitting idle so no turn pays a cold start. Full detail, including the
+fallback tiers for a cluster without gVisor, is in
+[docs/requirements.md](docs/requirements.md).
 
 ### Inference
 
 Any OpenAI-compatible endpoint. There is no in-cluster model server: serving a
 model well is a different problem from orchestrating agents, and running both on
-one small machine makes the demo compete with the sandboxes it exists to serve.
+one cluster makes the demo compete for CPU with the sandboxes it exists to
+serve.
 
-For local development, run Ollama on your own machine — where it also gets GPU
+For local development, Ollama on your own machine — where it also gets GPU
 acceleration:
 
 ```bash
 OLLAMA_HOST=0.0.0.0 ollama serve
 ```
 
-`values-lab.yaml` points at it. Credentials are optional; local providers need
-none.
+For a hosted endpoint, put the key in the runtime Secret:
 
-For a hosted endpoint:
+Set `INFERENCE_API_KEY` and `EMBEDDING_API_KEY` in
+`deploy/cluster/cluster.env`; `make deploy` writes them into the
+`meetings-runtime` Secret. They are applied with `kubectl`, never through Helm
+values, so a credential never lands in the release Secret or in
+`helm get values`.
 
-```bash
-kubectl -n meetings create secret generic meetings-runtime \
-  --from-literal=INFERENCE_API_KEY=... --from-literal=EMBEDDING_API_KEY=...
-helm upgrade meetings deploy/charts/meetings -n meetings \
-  --set inference.endpoint=https://... --set inference.modelName=...
-```
-
-One sharp edge worth knowing: sandboxes run under a default-deny egress policy,
-and **NetworkPolicy matches addresses, not DNS names**. Set
-`inference.egressCIDRs` to whatever your endpoint resolves to, or the backend
-will work while every sandbox turn fails with a bare connection error.
+Any OpenAI-compatible provider works, including one behind a CDN with no stable
+address. **Persona sandboxes never call the provider.** They reach it through
+the backend's `/internal/v1/llm` proxy, authenticating with their own
+ServiceAccount token, so a sandbox needs no route off the cluster and holds no
+provider credential.
 
 ## Platform
 
 | Component | Choice | Why |
 |---|---|---|
-| Cluster | 3-node k3s on Proxmox VMs | Real nodes with their own kernels, so `runsc` is simply the runtime |
 | Sandboxes | Agent Sandbox v0.5.6 (`agents.x-k8s.io/v1beta1`) | The emerging standard for agent isolation on Kubernetes |
+| Isolation | gVisor (`runsc`), `systrap` platform | Verified via `/proc/version`, never via a readiness check |
 | Database | CloudNativePG 1.30, Postgres 18 | pgvector arrives as a declarative **ImageVolume** extension, not a custom-baked image |
-| Ingress | Gateway API + Envoy Gateway + MetalLB | A real LoadBalancer address on the LAN, and the WebSocket upgrade the transcript stream needs |
+| Ingress | Gateway API + Envoy Gateway | A real address, and the WebSocket upgrade the transcript stream needs |
 | Migrations | Alembic, as a Helm pre-upgrade hook | Schema changes are explicit and reviewable, not a startup side effect |
+| Operator auth | Bearer tokens from a Secret, two roles | Editing a persona is a privilege change; reading a transcript is not |
+| Images | Multi-arch, cosign-signed, SLSA provenance | "Did this come from this repository's CI" is a different question from "did it change" |
+| Tracing | OpenTelemetry, OTLP → Tempo | One `traceparent` propagated across all three trust boundaries per turn |
+
+## Access control
+
+Two operator roles. A **viewer** reads meetings, transcripts and the capability
+matrix; an **operator** additionally edits personas and settings and drives
+meetings. The split is not the generic read/write one: a persona's tool list
+resolves to a capability profile, and the profile decides which ServiceAccount
+its sandbox runs under, so editing a persona *is* a privilege change.
+
+Sandboxes authenticate differently and more strongly — a projected ServiceAccount
+token validated by the apiserver, with identity read from pod labels rather than
+from a request body the model composed. See
+[docs/operations.md](docs/operations.md#operator-access).
 
 ## Development
 
-`make images` builds on the amd64 builder, tags each image by its content
-digest, and pushes to the in-cluster registry; `make deploy` passes those tags
-through. A mutable `:latest` leaves the Deployment spec unchanged
-when an image is rebuilt, so `helm upgrade` finds nothing to roll and the pod
-keeps serving stale code — a deploy that reports success and changed nothing.
-Identical content produces the same tag, so a no-op redeploy does not churn pods
-either.
-
 ```bash
-make check          # ruff, format, mypy, pytest, helm lint, kubeconform
-make migrate-check  # fails if the ORM has drifted from the migrations
-make status         # cluster at a glance
-tilt up             # live-reload inner loop
+make check            # lint, types, tests, chart validation, security scans
+make test             # unit tests: backend, sandbox runtime, frontend
+make test-integration # the assembled app against a real database
+make preflight        # is this cluster still able to support the controls?
+make status           # cluster at a glance
+tilt up               # live-reload inner loop
 ```
 
-Configuration is environment-only — there is no config file. Credentials come
-from the `meetings-runtime` Secret; operator-tunable values (prompts, turn
-limits, temperatures) live in a `system_settings` table and are editable through
-the UI. Attempting to set a credential through the settings API is a 422.
+Configuration is environment-only — there is no configuration file. Credentials
+come from Secrets; operator-tunable values (prompts, turn limits, temperatures)
+live in a `system_settings` table and are editable through the UI. Attempting to
+set a credential through the settings API is a 422.
 
-## Roadmap
-
-| Phase | Scope | Status |
-|---|---|---|
-| 0 | kind + gVisor + Agent Sandbox + CNPG/pgvector, fail-fast gates | ✅ done |
-| 1 | Config/secrets, Alembic, typed models, probes, CI, first tests | ✅ done |
-| 2 | Persona runtime image; agent turns execute inside sandboxes | ✅ done |
-| 3 | Full tool suite; Kubernetes-enforced least privilege; audit matrix | ✅ done |
-| 4 | Persona depth — every editable field actually reaches a prompt | ✅ done |
-| 5 | OpenTelemetry across all three tiers; Prometheus + Grafana | ✅ done |
-| 6 | Integration/e2e depth, operator auth, signed multi-arch images | next |
-| — | Migrated the dev cluster from laptop `kind` to a 3-node k3s cluster on Proxmox | ✅ done |
+Images are tagged by content digest rather than `:latest`. A mutable tag leaves
+the Deployment spec unchanged when the image is rebuilt, so `helm upgrade` finds
+nothing to roll and the pod keeps serving stale code — a deploy that reports
+success and changed nothing.
 
 ## Documentation
 
-- [Learning path](docs/learning-path.md) — the phases read as a curriculum:
-  the question each stage answers, what would surprise you if you skipped
-  it, and a command that proves the claim.
+- [Requirements](docs/requirements.md) — what a cluster must provide, why each
+  thing is needed, and how to install what is missing.
 - [Architecture](docs/architecture.md) — system diagram, namespaces, the turn
   sequence across all three trust boundaries, capability profiles, and the
   five-layer enforcement model.
-- [Sandbox security model](docs/sandbox-security-model.md) — isolation tiers,
-  what was verified, and the fallback ladder for hosts without gVisor.
+- [Sandbox security model](docs/sandbox-security-model.md) — what each control
+  stops, what it measures, the trade-off each design decision accepts, and what
+  the model does not claim.
 - [Verifying enforcement](docs/verify-enforcement.md) — the commands that
-  produce the enforcement table, to re-run after changing a profile.
+  produce the enforcement tables, to re-run after changing a profile.
+- [Operations](docs/operations.md) — configuration, operator access, images and
+  supply chain, observability, sandbox lifecycle.
 - [Demo script](docs/demo-script.md) — a fifteen-minute, presentation-paced
   walkthrough that provokes each claim live.
+- [Lessons learned](docs/lessons-learned.md) — what building this taught,
+  including the controls that looked right and did nothing.
+- [Sample scenario](docs/sample-scenario.md) — the shape a meeting brief takes.
 
 ## Acknowledgements
 
-Originally built as an HPE Private Cloud AI demo; rebuilt as a portable,
-vendor-neutral project.
+Built on [Kubernetes Agent Sandbox](https://agent-sandbox.sigs.k8s.io/),
+CloudNativePG, Envoy Gateway and gVisor. Originally an HPE Private Cloud AI
+demo; rebuilt as a portable, vendor-neutral project.

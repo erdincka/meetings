@@ -2,7 +2,7 @@
 
 # DS-0002: "Image user should not be 'root'".
 #
-# Applies to deploy/kind/node-image/Dockerfile, which extends kindest/node.
+# Applies to base images this project extends but does not control.
 # That image *is* a Kubernetes node: it runs kubelet, containerd and runsc, all
 # of which require root inside the node container. Adding a USER directive would
 # stop the cluster from starting.

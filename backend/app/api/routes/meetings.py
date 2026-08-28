@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import database
+from app.core.auth import authenticate_websocket
 from app.domain.meetings import MeetingCreate, MeetingDocumentLink, MeetingResponse
 from app.domain.response import APIResponse
 from app.models.documents import Document, DocumentChunk
@@ -20,6 +21,10 @@ from app.services.settings_service import get_runtime_settings
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
+# The WebSocket lives on its own router: the operator surface is guarded by a
+# router-level dependency that inspects the HTTP method, and a WebSocket
+# handshake has none. It authenticates itself in the handler instead.
+ws_router = APIRouter()
 
 # Global dict to track executing meeting tasks
 active_meetings: dict[str, asyncio.Task] = {}
@@ -264,13 +269,20 @@ async def delete_meeting(
     return APIResponse(status="success", data={"deleted": str(meeting_id)})
 
 
-@router.websocket("/{meeting_id}/ws")
+@ws_router.websocket("/{meeting_id}/ws")
 async def meeting_websocket(websocket: WebSocket, meeting_id: str) -> None:  # noqa: C901
     # noqa: C901 above -- this handler multiplexes command handling, event
-    # streaming and cancellation in one scope. Phase 2 splits it when the
-    # sandbox RPC path replaces in-process agent execution.
-    await websocket.accept()
-    logger.info("websocket_connected", meeting_id=meeting_id)
+    # streaming and cancellation in one scope.
+    #
+    # Operator, not viewer: this socket can start and terminate a meeting, which
+    # spends cluster resources and drives real model calls. Watching a
+    # transcript that is already running is a read, and is served over HTTP.
+    try:
+        principal = await authenticate_websocket(websocket)
+    except PermissionError:
+        logger.info("websocket_rejected", meeting_id=meeting_id)
+        return
+    logger.info("websocket_connected", meeting_id=meeting_id, role=principal.role)
 
     execution_task = None
 

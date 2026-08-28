@@ -1,4 +1,4 @@
-{{- if .Values.observability.serviceMonitor }}
+{{- if .Values.observability.enabled }}
 {{/*
 Scrape config for kube-prometheus-stack.
 

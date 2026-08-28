@@ -1,4 +1,15 @@
-# Sample Scenario Template
+# Sample scenario
+
+The shape a meeting brief takes. Paste the fields below into the meeting form,
+or use it as the template for your own.
+
+The demo script's [scenario](demo-script.md) is deliberately adversarial — it
+tempts a persona toward a capability it does not have — while this one is
+ordinary, which makes it the better first run when you want to see the system
+work before you see it refuse.
+
+---
+
 
 ## Name
 

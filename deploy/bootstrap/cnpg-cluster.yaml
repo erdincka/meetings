@@ -17,7 +17,7 @@ type: kubernetes.io/basic-auth
 stringData:
   username: metrics_ro
   # Dev-only credential. Real deployments source this from an external secret
-  # manager; it is committed here so `make kind-up` is reproducible.
+  # manager; it is committed here so the database is reproducible.
   password: metrics-ro-local-dev
 ---
 # The same credential as a connection string, in the namespace that actually

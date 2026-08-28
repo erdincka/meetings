@@ -5,7 +5,7 @@ The backend claims sandboxes from warm pools and reads their pods back to
 resolve the calling persona. It gets exactly those verbs, in exactly the sandbox
 namespaces, and nothing else -- notably no access to Secrets anywhere.
 
-Phase 3 splits SandboxClaim creation per capability profile, so that a persona
+SandboxClaim creation is split per capability profile, so that a persona
 lacking the code-execution grant is refused by the apiserver with a 403 rather
 than by prompt text. That is the demonstrable control the project is built
 around; this file is where it will land.

@@ -3,9 +3,11 @@
 set -euo pipefail
 export PATH="$HOME/.rd/bin:/opt/homebrew/bin:$PATH"
 
-KCTX="${1:-kind-meetings}"
+# Empty means "whatever kubectl is already pointed at", which is the right
+# default now that the cluster is yours rather than one this repo creates.
+KCTX="${1:-}"
 NS=netpol-smoke
-k() { kubectl --context "$KCTX" "$@"; }
+k() { if [ -n "$KCTX" ]; then kubectl --context "$KCTX" "$@"; else kubectl "$@"; fi; }
 
 cleanup() { k delete namespace "$NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
 trap cleanup EXIT

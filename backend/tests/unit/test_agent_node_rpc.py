@@ -128,16 +128,24 @@ class TestSuccessfulTurn:
         result = await node(_state(), _config())  # type: ignore[arg-type]
         assert result["sandboxes"] == {AGENT_ID: "sandbox-1"}
 
-    async def test_turn_key_is_deterministic(self, patched_sandbox: FakeSandboxState) -> None:
-        """Same meeting, same turn, same agent -> same key, so a replay is a hit."""
+    async def test_turn_key_is_deterministic(
+        self, patched_sandbox: FakeSandboxState, isolated_turn_cache: dict
+    ) -> None:
+        """Same meeting, same turn, same agent -> same key, so a replay is a hit.
+
+        The cache is emptied between the two calls so this test measures the key
+        and nothing else; that a repeat key short-circuits the sandbox is
+        TestDurableIdempotency's subject.
+        """
         node = agents_module.create_role_agent_node(AGENT_ID)
         await node(_state(current_turn=3), _config())  # type: ignore[arg-type]
+        isolated_turn_cache.clear()
         await node(_state(current_turn=3), _config())  # type: ignore[arg-type]
         assert patched_sandbox.turn_counts == {f"meeting-1:3:{AGENT_ID}": 2}
         assert list(patched_sandbox.turn_counts) == [f"meeting-1:3:{AGENT_ID}"]
 
     async def test_settings_reach_the_sandbox(self, patched_sandbox: FakeSandboxState) -> None:
-        """Temperature and retrieval limit were hardcoded before Phase 1."""
+        """Operator-tuned settings must reach the sandbox, not just the backend."""
         node = agents_module.create_role_agent_node(AGENT_ID)
         await node(_state(), _config())  # type: ignore[arg-type]
 

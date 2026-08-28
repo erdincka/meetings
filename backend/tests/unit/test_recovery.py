@@ -1,7 +1,8 @@
 """Model-output interpretation.
 
-These paths decide who speaks next and what reaches the transcript. Before
-Phase 1 none of them had a single test.
+These paths decide who speaks next and what reaches the transcript, from
+output a small model produces inconsistently. They are the least deterministic
+input in the system and the most consequential to get wrong.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import pytest
 from app.orchestration.recovery import (
     FINISH,
     recover_speaker_id,
+    salvage_decision,
     split_thought,
     strip_speaker_prefix,
 )
@@ -189,3 +191,79 @@ class TestUnclosedThoughtTag:
         assert public == "said aloud"
         assert "one" in thought
         assert "two" in thought
+
+
+class TestSalvageDecision:
+    """What to do with a response strict validation threw away.
+
+    `with_structured_output` returns None for anything that does not validate,
+    which makes "no tool call at all", "one field missing" and "answered in
+    prose" indistinguishable. The first is genuinely unrecoverable; the others
+    usually carry a good speaker id, and discarding them ended meetings at turn
+    0 while `recover_speaker_id` sat unreachable.
+    """
+
+    def test_a_tool_call_missing_only_reasoning_is_kept(self) -> None:
+        out = salvage_decision([{"args": {"next_speaker": "agent-1"}}], None)
+        assert out == {"next_speaker": "agent-1", "reasoning": ""}
+
+    def test_a_complete_tool_call_is_kept_whole(self) -> None:
+        out = salvage_decision(
+            [{"args": {"next_speaker": "agent-1", "reasoning": "they own the numbers"}}], None
+        )
+        assert out == {"next_speaker": "agent-1", "reasoning": "they own the numbers"}
+
+    def test_json_in_prose_is_recovered(self) -> None:
+        """A model that ignored the tool and answered in text anyway."""
+        out = salvage_decision(None, 'Here you go:\n{"next_speaker": "agent-2", "reasoning": "x"}')
+        assert out is not None and out["next_speaker"] == "agent-2"
+
+    def test_prose_naming_someone_is_not_a_decision(self) -> None:
+        """A id merely *mentioned* must not become the routing decision."""
+        assert salvage_decision(None, "I think agent-2 should probably go next.") is None
+
+    def test_nothing_usable_returns_none(self) -> None:
+        assert salvage_decision(None, None) is None
+        assert salvage_decision([], "") is None
+        assert salvage_decision([{"args": {"reasoning": "no speaker named"}}], None) is None
+
+    def test_blank_speaker_is_not_a_decision(self) -> None:
+        assert salvage_decision([{"args": {"next_speaker": "   "}}], None) is None
+
+
+class TestTextualToolCalls:
+    """Tool calling is a convention layered on text generation.
+
+    When a serving stack does not translate a model's chosen encoding, the
+    markup arrives as content with `tool_calls` empty -- observed in production
+    as `<tool_call>SupervisorDecision<arg_key>next_speaker</arg_key>...`, which
+    is a decision the chair simply could not read. None of these forms is
+    specific to one model.
+    """
+
+    def test_arg_key_markup_is_read(self) -> None:
+        raw = (
+            "<tool_call>SupervisorDecision\n"
+            "<arg_key>next_speaker</arg_key>\n<arg_value>agent-1</arg_value>\n"
+            "<arg_key>reasoning</arg_key>\n<arg_value>They own quality.</arg_value>\n"
+            "</tool_call>"
+        )
+        assert salvage_decision(None, raw) == {
+            "next_speaker": "agent-1",
+            "reasoning": "They own quality.",
+        }
+
+    def test_fenced_json_is_read(self) -> None:
+        raw = 'Sure.\n```json\n{"next_speaker": "agent-2", "reasoning": "r"}\n```'
+        out = salvage_decision(None, raw)
+        assert out is not None and out["next_speaker"] == "agent-2"
+
+    def test_function_markup_is_read(self) -> None:
+        raw = '<function=SupervisorDecision>{"next_speaker": "agent-3"}</function>'
+        out = salvage_decision(None, raw)
+        assert out is not None and out["next_speaker"] == "agent-3"
+
+    def test_an_unrecognised_encoding_is_refused_not_guessed(self) -> None:
+        """Better no decision than one scraped out of prose: an id mentioned
+        while reasoning about someone else must not become the routing."""
+        assert salvage_decision(None, "agent-1 raised a good point, so agent-2 next") is None

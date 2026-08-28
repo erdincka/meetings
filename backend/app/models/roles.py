@@ -32,8 +32,9 @@ class RoleAgent(Base, TimestampMixin):
 
     system_prompt: Mapped[str | None] = mapped_column(Text)
 
-    # The tool grant. Phase 3 resolves this to a capability profile that is
-    # enforced by Kubernetes objects, not by prompt text.
+    # The tool grant. Resolved to a capability profile that is enforced by
+    # Kubernetes objects rather than by prompt text -- which makes editing this
+    # field a privilege change, not a preference.
     default_tools: Mapped[list[Any]] = mapped_column(JSON, default=list)
 
     ui_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

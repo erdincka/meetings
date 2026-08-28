@@ -18,7 +18,7 @@ import type { PromptMetadata, SystemSettings, SystemSettingsUpdate } from "@/lib
 /**
  * Operator-tunable settings.
  *
- * Scope narrowed in Phase 1: endpoints and API keys are environment-supplied
+ * Scope is deliberately narrow: endpoints and API keys are environment-supplied
  * and no longer editable here (the API rejects them with a 422). What remains
  * is what an operator may legitimately change at runtime -- prompts, limits and
  * sampling temperatures -- all persisted in the `system_settings` table.

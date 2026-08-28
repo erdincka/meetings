@@ -16,13 +16,19 @@ env:
   # Unit tests never reach an endpoint -- the fake sandbox and a stubbed model
   # stand in -- but settings are read from the environment at import, so these
   # must be present and deterministic. Local development points the same
-  # variables at Ollama on the host; see deploy/charts/meetings/values-lab.yaml.
+  # variables at a real endpoint; see deploy/cluster/cluster.env.example.
   INFERENCE_ENDPOINT: http://inference.test/v1
   INFERENCE_MODEL_NAME: test-model
   INFERENCE_API_KEY: ""
   EMBEDDING_ENDPOINT: http://embedding.test/v1
   EMBEDDING_MODEL_NAME: test-embed
   EMBEDDING_API_KEY: ""
+  # Operator authentication is on by default and the process refuses to start
+  # without a token. These are the values the test suite expects; they are not
+  # secrets and never leave CI.
+  AUTH_ENABLED: "true"
+  OPERATOR_TOKEN: test-operator-token
+  VIEWER_TOKEN: test-viewer-token
 
 jobs:
   backend:
@@ -65,12 +71,10 @@ jobs:
       - name: mypy
         run: uv run mypy app
 
-      # The floor locks in current coverage so it cannot regress. Phase 3's
-      # profile, tool-registry and denial tests lifted it from 21% to 50%. The
-      # remaining gap is mostly route and executor code that needs a live
-      # database and a live cluster.
-      - name: pytest
-        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing --cov-fail-under=48
+      # Units run first and against no database at all. The floor locks in
+      # current coverage so it cannot regress.
+      - name: pytest (unit)
+        run: uv run pytest tests/unit -v --cov=app --cov-report=term-missing --cov-fail-under=50
 
       - name: alembic upgrade
         run: uv run alembic upgrade head
@@ -79,6 +83,19 @@ jobs:
       # that surfaced when the models moved to typed declarative.
       - name: alembic drift check
         run: uv run alembic check
+
+      # Integration runs after the migrations, against the assembled app and a
+      # real schema. This is the layer that catches what unit tests cannot: a
+      # router written and never mounted, a guard attached to one surface and
+      # not another, a meeting that does not survive losing a sandbox mid-turn.
+      - name: pytest (integration)
+        run: uv run pytest tests/integration -v
+
+      # The combined floor is higher than the unit-only one because the
+      # integration suite reaches route and executor code that a unit test
+      # cannot exercise without a database.
+      - name: coverage floor (unit + integration)
+        run: uv run pytest tests --cov=app --cov-report=term-missing --cov-fail-under=62
 
       # The chart's profile values are generated from
       # app/orchestration/profiles.py. If they drift, the tools the runtime
@@ -120,7 +137,7 @@ jobs:
                                sandbox/runtime/runtime/tool_guidance.py
 
   frontend:
-    name: frontend (lint, types)
+    name: frontend (lint, types, tests)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -136,6 +153,8 @@ jobs:
       - run: npm run lint
       - name: tsc
         run: npx tsc --noEmit
+      - name: vitest
+        run: npm test
 
   charts:
     name: charts (lint, schema)
@@ -143,18 +162,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: azure/setup-helm@v5
-      # The lab values carry real network addresses and are gitignored, so CI
-      # renders them from the committed example. That also proves the example
-      # is complete: a placeholder missing from it fails the render here rather
-      # than on someone's first clone.
-      - name: render lab config from the example
+      # cluster.env carries real addresses and is gitignored, so CI renders
+      # from the committed example. That also proves the example is complete: a
+      # placeholder missing from it fails the render here rather than on
+      # someone's first clone.
+      - name: render cluster config from the example
         run: |
-          cp deploy/k3s/lab.env.example deploy/k3s/lab.env
+          cp deploy/cluster/cluster.env.example deploy/cluster/cluster.env
           python3 scripts/render.py \
-            deploy/k3s/metallb-pool.yaml.tmpl \
-            deploy/k3s/registry.yaml.tmpl \
-            deploy/bootstrap/gatewayclass.yaml.tmpl \
-            deploy/charts/meetings/values-lab.yaml.tmpl
+            deploy/cluster/templates/metallb-pool.yaml.tmpl \
+            deploy/cluster/templates/registry.yaml.tmpl \
+            deploy/cluster/templates/gatewayclass.yaml.tmpl \
+            deploy/charts/meetings/values-cluster.yaml.tmpl
 
       - name: helm lint
         run: helm lint deploy/charts/meetings
@@ -168,7 +187,7 @@ jobs:
       # including the Gateway API CRDs.
       - name: kubeconform
         run: |
-          for f in values.yaml values-lab.yaml; do
+          for f in values.yaml values-cluster.yaml; do
             echo "::group::$f"
             helm template meetings deploy/charts/meetings -n meetings \
               -f "deploy/charts/meetings/$f" \

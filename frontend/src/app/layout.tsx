@@ -5,6 +5,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster } from 'sonner'
 import Sidebar from '@/components/layout/sidebar'
 import QueryProvider from '@/providers/query-provider'
+import AuthGuard from '@/providers/auth-guard'
 import SetupGuard from '@/providers/setup-guard'
 
 import { ThemeProvider } from '@/components/ThemeProvider'
@@ -32,14 +33,18 @@ export default function RootLayout({
         >
           <Toaster closeButton position="top-right" richColors />
           <QueryProvider>
-            <SetupGuard>
-              <TooltipProvider>
-                  <Sidebar />
-                  <main className="flex-1 overflow-auto relative">
-                      {children}
-                  </main>
-              </TooltipProvider>
-            </SetupGuard>
+            {/* Auth outside setup: whether the backend is configured is itself
+                information, so it is answered only to an authenticated caller. */}
+            <AuthGuard>
+              <SetupGuard>
+                <TooltipProvider>
+                    <Sidebar />
+                    <main className="flex-1 overflow-auto relative">
+                        {children}
+                    </main>
+                </TooltipProvider>
+              </SetupGuard>
+            </AuthGuard>
           </QueryProvider>
         </ThemeProvider>
       </body>

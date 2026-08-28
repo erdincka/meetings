@@ -72,6 +72,39 @@ LLM_TOKENS = Counter(
 )
 
 
+# A labelled Prometheus metric has no child series until something observes it,
+# so on a freshly deployed backend /metrics carries no meetings_* series at all
+# and every dashboard panel reads "no data" -- identical to the panel you get
+# when scraping is genuinely broken. That ambiguity cost real debugging time, so
+# the series that can exist are created at zero up front. "No data" then means
+# something is actually wrong, and a profile that never speaks is visibly idle
+# rather than absent.
+#
+# Only combinations that can actually occur: a profile is pre-seeded with its
+# own tools, not with every tool, so the tool panels show the capability matrix
+# rather than a grid of impossible pairs.
+TURN_OUTCOMES = ("ok", "error", "no_sandbox")
+TOOL_OUTCOMES = ("ok", "error", "denied")
+TOKEN_DIRECTIONS = ("prompt", "completion")
+
+
+def preregister_metric_series() -> None:
+    """Create every series that can occur, at zero. Safe to call more than once."""
+    from app.orchestration.profiles import PROFILES
+
+    for profile in PROFILES:
+        for outcome in TURN_OUTCOMES:
+            MEETING_TURNS.labels(profile=profile.name, outcome=outcome)
+        for direction in TOKEN_DIRECTIONS:
+            LLM_TOKENS.labels(profile=profile.name, direction=direction)
+        TURN_DURATION.labels(profile=profile.name)
+        SANDBOX_ACQUIRE.labels(profile=profile.name)
+        SANDBOXES_ACTIVE.labels(profile=profile.name)
+        for tool in sorted(profile.tools):
+            for outcome in TOOL_OUTCOMES:
+                TOOL_CALLS.labels(profile=profile.name, tool=tool, outcome=outcome)
+
+
 # --- tracing ---------------------------------------------------------------
 
 _tracer = None
@@ -80,6 +113,11 @@ _tracer = None
 def setup_telemetry(app: object) -> None:
     """Wire tracing to the configured OTLP endpoint, if there is one."""
     global _tracer
+
+    # Unconditional, and before the tracing check below: metrics are served
+    # whether or not traces have anywhere to go, and this is what makes an
+    # idle-but-healthy backend distinguishable from an unscraped one.
+    preregister_metric_series()
 
     if not settings.OTEL_EXPORTER_OTLP_ENDPOINT:
         logger.info("tracing_disabled_no_endpoint")

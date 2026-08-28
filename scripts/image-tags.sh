@@ -1,26 +1,38 @@
 #!/usr/bin/env bash
-# Resolve each image to a content-addressed tag, and optionally push it.
+# Resolve each image to the tag `make deploy` should use, and optionally push.
 #
-# Why not `:latest`: a mutable tag leaves the Deployment spec unchanged when the
-# image is rebuilt, so `helm upgrade` finds nothing to roll and the pod keeps
-# serving old code. The deploy reports success having changed nothing, which is
-# a bad failure because it is invisible -- it cost real debugging time twice
-# before this existed.
+#   scripts/image-tags.sh          emit tag assignments for `make deploy`
+#   scripts/image-tags.sh --push   also tag and push the content-addressed tags
+#
+# Why not a plain `:latest` for images you build yourself: a mutable tag leaves
+# the Deployment spec unchanged when the image is rebuilt, so `helm upgrade`
+# finds nothing to roll and the pod keeps serving stale code. The deploy reports
+# success having changed nothing, which is the worst shape of failure because it
+# is invisible.
 #
 # Tagging by content digest makes the tag change exactly when the image changes:
 # same content, same tag, no pointless restart; new content, new tag, guaranteed
 # rollout.
 #
-#   scripts/image-tags.sh          emit tag assignments for `make deploy`
-#   scripts/image-tags.sh --push   also tag and push them from the builder
+# Published releases need none of this. Their tags are already immutable and
+# signed, so if no locally built image is found this falls back to
+# IMAGE_TAG from cluster.env and says so.
 #
 # Written for bash 3.2, which is what macOS ships: no mapfile, no associative
 # arrays.
 set -euo pipefail
 export PATH="$HOME/.rd/bin:/opt/homebrew/bin:$PATH"
 
-BUILDER=${BUILDER:-ubuntu@10.1.1.33}
-REGISTRY=${REGISTRY:-10.1.1.240:5000}
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+ENV_FILE="$REPO/deploy/cluster/cluster.env"
+# shellcheck disable=SC1090
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+
+REGISTRY=${IMAGE_REGISTRY:?set IMAGE_REGISTRY in deploy/cluster/cluster.env}
+TAG=${IMAGE_TAG:-latest}
+# shellcheck source=scripts/builder-target.sh
+. "$REPO/scripts/builder-target.sh"
+BUILDER=$(normalize_builder "${BUILDER:-}")
 PUSH=${1:-}
 
 IMAGES="BACKEND_TAG:meetings-backend
@@ -29,34 +41,50 @@ RUNTIME_TAG:meetings-persona-runtime
 EXEC_TAG:meetings-exec-python
 CORPUS_TAG:meetings-corpus"
 
-# One SSH round trip for all digests rather than one per image: this runs on
-# every deploy and the latency adds up.
+# One round trip for every digest rather than one per image: this runs on every
+# deploy, and over SSH the latency adds up.
 query=""
-echo "$IMAGES" | while read -r _; do :; done
 for entry in $IMAGES; do
   image="${entry#*:}"
   query="${query}docker image inspect $REGISTRY/$image:latest --format '$image {{.Id}}' 2>/dev/null || echo '$image MISSING';"
 done
-results=$(ssh -o BatchMode=yes "$BUILDER" "$query")
+
+if [ -n "$BUILDER" ]; then
+  results=$(ssh -o BatchMode=yes "$BUILDER" "$query" 2>/dev/null || true)
+else
+  results=$(eval "$query" 2>/dev/null || true)
+fi
 
 digest_of() {
   echo "$results" | awk -v want="$1" '$1 == want { print $2; exit }'
 }
 
 push_cmd=""
+built=0
 for entry in $IMAGES; do
   var="${entry%%:*}"; image="${entry#*:}"
   id=$(digest_of "$image")
   if [ -z "$id" ] || [ "$id" = "MISSING" ]; then
-    echo "error: $REGISTRY/$image:latest not built -- run 'make images'" >&2
-    exit 1
+    # Nothing built here: this deployment pulls a published image.
+    echo "${var}=${REGISTRY}/${image}:${TAG}"
+    continue
   fi
+  built=$((built + 1))
   short=$(echo "${id#sha256:}" | cut -c1-12)
   echo "${var}=${REGISTRY}/${image}:${short}"
   push_cmd="${push_cmd}docker tag $REGISTRY/$image:latest $REGISTRY/$image:$short;docker push -q $REGISTRY/$image:$short >/dev/null;"
 done
 
-if [ "$PUSH" = "--push" ]; then
-  ssh -o BatchMode=yes "$BUILDER" "$push_cmd"
+if [ "$built" -eq 0 ]; then
+  echo "no locally built images found; using published ${REGISTRY}/*:${TAG}" >&2
+  echo "verify them before deploying:  make verify-images" >&2
+fi
+
+if [ "$PUSH" = "--push" ] && [ -n "$push_cmd" ]; then
+  if [ -n "$BUILDER" ]; then
+    ssh -o BatchMode=yes "$BUILDER" "$push_cmd"
+  else
+    eval "$push_cmd"
+  fi
   echo "pushed content-tagged images to $REGISTRY" >&2
 fi

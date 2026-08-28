@@ -51,7 +51,7 @@ class ModelConfig(BaseModel):
 class TurnLimits(BaseModel):
     """Caps applied inside the sandbox.
 
-    These come from the system_settings table. Before Phase 1 they were editable
+    These come from the system_settings table. They were once editable
     in the UI and read by nothing -- the agent hardcoded temperature 0.7 and the
     retrieval tool a limit of 3.
     """
@@ -154,7 +154,7 @@ class ToolResult(BaseModel):
     ok: bool
     summary: str = ""
     duration_ms: int = 0
-    # Set when a tool was refused rather than attempted. Phase 3 surfaces these
+    # Set when a tool was refused rather than attempted. The UI surfaces these
     # in the UI as the visible half of least privilege.
     denied_reason: str | None = None
 

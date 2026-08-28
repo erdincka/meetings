@@ -1,114 +1,96 @@
 # Sandbox security model
 
-## Runtime isolation tier: gVisor (runsc) — CONFIRMED
+What contains untrusted agent execution here, what each control actually stops,
+and how to confirm it is doing so on your cluster rather than taking this
+document's word for it.
 
-The fallback ladder defined during planning was:
+The commands that produce every table below are in
+[verify-enforcement.md](verify-enforcement.md). Re-run them after changing a
+capability profile.
 
-1. **`runsc` / gVisor** — preferred
-2. `crun` + `hostUsers: false` (user namespaces)
-3. `runc` + `restricted` Pod Security Admission
+## Isolation
 
-**Tier 1 is in effect.** Verified 2026-08-22 on the target host.
+Agent code runs under gVisor (`runsc`), on the `systrap` platform. The sentry
+implements the syscall surface in userspace, so a container escape has to get
+through a second kernel implementation before it reaches the host's.
 
-### Evidence
+`sandbox.runtimeClassName` is a Helm value and `gvisor` appears in no template.
+A cluster that cannot run `runsc` drops to a weaker tier by changing one value —
+see [requirements.md](requirements.md#isolation-tiers) for what each tier gives
+up. They are not equivalent, and presenting on tier 3 while describing tier 1 is
+the one thing this document exists to prevent.
 
-`deploy/bootstrap/smoke-gvisor.yaml` run on a kind cluster built from
-`deploy/kind/node-image` (gVisor `release-20260817.0`):
+### Isolation is asserted, never assumed
+
+A misconfigured RuntimeClass handler does not fail loudly. On several container
+runtimes it silently falls back to `runc`, producing a green, `Ready` pod with
+no isolation whatsoever — a fake security story that looks identical to a real
+one from the outside.
+
+The gate greps `/proc/version` inside a pod that actually ran, for gVisor's
+distinctive sentry string:
+
+```bash
+make smoke-gvisor
+```
 
 ```
-kernel: Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016
+kernel: Linux version 4.19.0-gvisor #1 SMP ...
 GVISOR-OK
 ```
 
-This matters more than it looks. The stack nests four deep —
-macOS Virtualization.framework → Rancher Desktop Linux VM (aarch64) →
-kind node container → containerd → `runsc` — and arm64 gVisor under that much
-nesting is the least-tested corner of the support matrix. It works.
+**Never weaken this assertion to a readiness check.** Readiness is exactly the
+signal that cannot tell the two cases apart.
 
-### Why the smoke test asserts on `/proc/version`
+## Two tiers of sandbox
 
-A misconfigured `RuntimeClass` handler does **not** always fail loudly: on
-several setups containerd silently falls back to `runc`, producing a green,
-Ready pod with no isolation whatsoever — a fake security story that looks
-identical to a real one from the outside. gVisor's sentry reports a
-distinctive kernel string (`4.19.0-gvisor`), so the gate greps for it and
-fails the build if it is absent. **Never weaken this assertion to a readiness
-check.**
+| | Tier A — persona | Tier B — exec |
+|---|---|---|
+| Runs | one attendee's ReAct loop | model-authored Python |
+| Namespace | `meetings-sandboxes` | `meetings-exec` |
+| Lifetime | one meeting | one call, 60s deadline |
+| Egress | backend internal API, DNS, apiserver | **none** |
+| Claimed by | the backend, from a warm pool | the Tier A pod itself, if RBAC allows |
 
-### Host-specific notes
+Tier A no longer reaches the model directly either: it calls the backend's
+`/internal/v1/llm` proxy, so a persona sandbox has no route off the cluster
+except the apiserver, and carries no provider credential. That replaced an
+ipBlock list of the endpoint's addresses, which a CDN-fronted provider cannot
+supply -- the only rule that worked was `0.0.0.0/0`, granting the whole internet
+to the least-trusted component in order to reach one host.
 
-- gVisor publishes release artifacts under `aarch64` / `x86_64`, **not**
-  `arm64` / `amd64`. The Go-style names 404.
-- `platform = "systrap"` (the default) is used deliberately: it is a
-  userspace platform and needs no KVM, which is unavailable to us inside the
-  macOS VM.
-- `ignore-cgroups = "true"` keeps runsc from contending with the kind node
-  over cgroup ownership.
+Tier B is where the strongest statement holds: code the model wrote runs with no
+network route to anything. Not to the database, not to the backend, not to the
+model.
 
-### Portability
+The Tier B claim is made **by the persona pod**, using the ServiceAccount token
+mounted into it. The backend is not in that path and cannot broker around the
+apiserver's decision on a persona's behalf.
 
-`sandbox.runtimeClassName` is a Helm value and `gvisor` is never hardcoded in
-a template, so dropping to tier 2 or 3 on a host that cannot run runsc is a
-one-line values change. Nightly CI runs the same gate on amd64 runners.
+## The five layers
 
-### Since moved to real nodes
+| Layer | Control | Stops | Observable as |
+|---|---|---|---|
+| Prompt | Only granted tools are registered | Honest mistakes | the tool list in a bind |
+| Runtime | Grant intersected with a capability file mounted from a ConfigMap | A compromised backend over-granting | `/etc/sandbox/capabilities` in the pod |
+| Secret | Credentials mounted only into templates that need them | Nothing to steal | file present or absent |
+| NetworkPolicy | Default-deny egress per profile | A stolen credential being *used* | a socket that connects or does not |
+| RBAC | Only some ServiceAccounts may claim an exec sandbox | The agent itself | a 403 from the apiserver |
 
-The nesting described above was a property of running Kubernetes nodes as
-containers inside a VM on a laptop. The cluster now runs on Proxmox VMs, each
-with its own kernel, so `runsc` is simply the container runtime and none of the
-nesting caveats apply. The gate is unchanged and still asserts on
-`/proc/version`, because a misconfigured RuntimeClass falls back to `runc`
-silently wherever it runs.
+Only the last one is decided by a system the application cannot influence at
+all. That is why it carries the demo.
 
-### Durability across host restarts
-
-Planning flagged a concern that a runsc setup might not survive a Rancher
-Desktop restart. It does. After `rdctl set --kubernetes.enabled=false`
-reconfigured and restarted the VM backend, both kind nodes came back, the
-CNPG cluster and its pgvector ImageVolume were intact, and both gates passed
-again unchanged. The runsc binary and containerd handler live in the kind
-*node image*, so they are rebuilt only by `make node-image`, not by anything
-the host does.
-
-### Reaching a sandbox from the backend
-
-`Sandbox.spec.service: true` makes the controller publish a per-sandbox
-Service, and `Sandbox.status.serviceFQDN` carries its DNS name. Verified: a
-pod in the `meetings` namespace reaches a sandbox in `meetings-sandboxes` at
-`<name>.<ns>.svc.cluster.local:8080` and gets HTTP 200.
-
-The backend runs in-cluster, so backend → persona-runtime calls use
-`serviceFQDN` directly, and the Sandbox Router is not on the hot path.
-
-**Correction to the original Phase 0 note.** That conclusion was drawn from a
-Sandbox created directly, with no SandboxTemplate. Sandboxes created *from a
-template* behave differently: `networkPolicyManagement` defaults to `Managed`,
-so when a template declares no `networkPolicy` the controller synthesises one
-that allows ingress **only from the Sandbox Router** and egress to the public
-internet with every RFC1918 range excluded. Direct calls are denied under that
-default.
-
-The default is a good one — it assumes traffic goes through the Router. This
-project takes the other path and declares its policy explicitly (see
-`deploy/charts/meetings/templates/sandbox-templates.yaml`), opening exactly two
-routes: ingress from the backend on 8080, and egress to the backend's internal
-API on 8000 plus DNS and the inference endpoint.
-
-## Enforcement, measured
-
-Each layer was verified independently on the running cluster. The table is
-generated by hand from the commands in `docs/verify-enforcement.md`; re-run them
-after changing any profile.
+### Measured
 
 **Layer 5 — RBAC.** May the profile claim a code-execution sandbox?
-`kubectl auth can-i create sandboxclaims --as=system:serviceaccount:...`
 
 | baseline | counsel | strategist | analyst | **quant** | chief |
 |---|---|---|---|---|---|
 | no | no | no | no | **yes** | no |
 
-`chief` has the broadest tool set of any profile and is still refused.
-Capability follows the job, not the rank.
+`chief` has the broadest tool set of any profile and is still refused. Capability
+follows the job, not the rank — and the contrast between `chief` and `quant` is
+what makes the boundary legible rather than a rule that happens to bind the CEO.
 
 **Layer 4 — NetworkPolicy.** May the profile reach Postgres on 5432?
 
@@ -122,12 +104,10 @@ Capability follows the job, not the rank.
 |---|---|---|---|---|
 | absent | absent | present | present | present |
 
-Layers 3 and 4 compose: a persona without the credential also has no route to
-use one, so a DSN leaked into a prompt is useless to the wrong profile.
+Layers 3 and 4 compose: a persona with no credential also has no route to use
+one, so a DSN leaked into a prompt is useless to the wrong profile.
 
-### The demo, measured
-
-Calling the *same tool* from two profiles, through the real code path:
+**The same tool, from two profiles, through the real code path:**
 
 ```
 profile=quant    -> hello from the exec sandbox
@@ -136,38 +116,105 @@ profile=counsel  -> DENIED_BY_CLUSTER: this persona is not permitted to
                     sandbox claim.
 ```
 
-And what the exec tier itself can reach, from inside it:
+**What the exec tier can reach, from inside it:**
 
-| database | backend | inference endpoint |
+| database | backend | the model |
 |---|---|---|
 | blocked | blocked | blocked |
 
-A real chart is produced end to end: model-authored matplotlib runs in the
-network-isolated tier and returns a 36KB PNG, which becomes a meeting artifact.
+End to end: model-authored matplotlib runs in that network-isolated tier and
+returns a 36KB PNG, which becomes a meeting artifact.
 
-### Why every profile may reach the API server
+## Design decisions worth stating
 
-An earlier version blocked apiserver egress for profiles without the
-code-execution grant. It was marginally stronger and clearly wrong.
+### Every profile may reach the apiserver
+
+Blocking apiserver egress for profiles without the code-execution grant sounds
+like defence in depth. It is marginally stronger and clearly worse: the refusal
+becomes a 60-second connection timeout instead of a 403, and a policy decision
+becomes indistinguishable from an outage.
 
 RBAC is the authoritative control. Letting the request reach the apiserver means
-a refusal comes back as a fast, unambiguous 403 that the agent can report and
-the audit matrix can display. Blocking it at the network instead produced a
-60-second connection timeout: the turn stalled, and a policy decision became
-indistinguishable from an outage.
+the refusal comes back fast and unambiguous, the agent can report it, and the
+audit matrix can display it. **A denial nobody can see is a control nobody can
+trust.**
 
-A denial nobody can see is a control nobody can trust, so legibility won.
+*Trade-off accepted:* every persona pod can talk to the apiserver, so a
+compromised pod can enumerate what its ServiceAccount is permitted to do. It
+cannot exceed it, and the alternative traded a visible control for an invisible
+one.
 
-### A correction worth recording
+### A denial is reported, not raised
 
-An earlier version of this document claimed NetworkPolicy enforcement had been
-verified. It had not. kind's default CNI, **kindnetd, does not implement
-NetworkPolicy at all** — policies apply cleanly, `kubectl get networkpolicy`
-looks correct, and nothing is blocked. Measured on that cluster, a `baseline`
-persona reached Postgres on five consecutive attempts.
+`run_python_analysis` catches the 403 and returns `DENIED_BY_CLUSTER` as a
+normal tool result. The agent carries on contributing, and the refusal appears
+in the transcript and the audit matrix as a policy decision.
 
-This is the same class of failure the gVisor gate exists to prevent: a control
-that looks right from the outside and does nothing. The cluster now disables the
-default CNI and installs Calico, and `make smoke` includes a third gate that
-asserts a deny-all policy actually blocks traffic rather than merely being
-accepted.
+*Trade-off accepted:* the agent learns it was refused and could, in principle,
+route around the refusal. It has nowhere to route to — every other layer holds —
+and the alternative crashes the turn, showing an outage where a policy decision
+belongs. That misrepresents the security story in the direction that flatters
+it.
+
+### Sandboxes never hold the application database credential
+
+Everything a persona sandbox needs goes through a scoped internal API, and the
+caller's identity there comes from a TokenReview plus the pod's own labels — not
+from the request body, which the model composes.
+
+The single exception is a read-only DSN for a separate metrics schema, mounted
+only into profiles granted it, and reachable only by profiles whose
+NetworkPolicy allows it.
+
+*Trade-off accepted:* an extra hop for every retrieval, and a backend that must
+be reachable for a sandbox to do useful work. The alternative puts a credential
+the model can read inside the boundary the model is being contained by.
+
+### NetworkPolicy is declared explicitly, not managed
+
+Sandboxes created from a SandboxTemplate default to `networkPolicyManagement:
+Managed`, where the controller synthesises a policy allowing ingress only from
+the Sandbox Router. That default is a good one and assumes traffic goes through
+the Router.
+
+This project declares its policy explicitly and opens a short list of routes:
+ingress from the backend on 8080, and egress to the backend's internal API on
+8000 plus DNS and the apiserver -- and, per profile, Postgres, the corpus, the
+exec namespace and the trace collector. Nothing reaches the internet. The
+backend runs in-cluster and reaches sandboxes at `status.serviceFQDN` directly,
+so the Router is not on the hot path.
+
+*Trade-off accepted:* the policy is ours to maintain, and a new egress
+requirement is a chart change rather than something the controller infers. In
+exchange the routes are readable in one file, and there is one fewer hop in
+every turn.
+
+### One image, many profiles
+
+Every profile runs the same runtime image. Nothing about the image decides what
+an agent may do — only the SandboxTemplate, ServiceAccount, NetworkPolicy and
+mounted Secrets its sandbox is created from.
+
+*Trade-off accepted:* the image contains code for tools a given profile will
+never be allowed to call. That is the point: the runtime intersects the
+backend's grant with a capability file mounted from a ConfigMap, so what is
+*present* and what is *permitted* are separate questions decided by separate
+systems.
+
+## What this model does not claim
+
+- **It is not a defence against a malicious operator.** Anyone holding the
+  operator token can grant a persona any profile. The role split
+  ([operations.md](operations.md#operator-access)) narrows who that is; it does
+  not eliminate the trust.
+- **It is not a multi-tenant boundary.** One database, one namespace set, one
+  meeting at a time. Personas are isolated from each other and from the host;
+  tenants are not a concept here.
+- **It does not defend the model itself.** A persona reaches the model through
+  the backend's proxy, and the proxy forwards what it is given -- it is a
+  network and credential boundary, not a content filter. Prompt injection through retrieved documents is
+  in scope for what the *cluster* controls — a compromised agent still cannot
+  exceed its profile — and out of scope for what the *model* does within them.
+- **Tiers 2 and 3 are weaker, and differently weak.** Without a kernel boundary,
+  container escape is a host-kernel bug away. The RBAC and NetworkPolicy layers
+  are unaffected; the isolation layer is the one you lose.

@@ -1,6 +1,8 @@
 import axios, { AxiosError, AxiosInstance } from "axios"
 import { toast } from "sonner"
 
+import { clearToken, readToken } from "@/lib/auth"
+
 export interface APIResponse<T = unknown> {
   status: "success" | "error"
   data?: T
@@ -20,6 +22,17 @@ class APIClient {
       headers: { "Content-Type": "application/json" },
     })
 
+    // Attached per request rather than once at construction: the token is not
+    // known when this module is imported, and it changes when the operator
+    // signs in or out.
+    this.client.interceptors.request.use((config) => {
+      const token = readToken()
+      if (token) {
+        config.headers.set("Authorization", `Bearer ${token}`)
+      }
+      return config
+    })
+
     this.client.interceptors.response.use(
       (response) => response,
       (error: AxiosError) => {
@@ -28,9 +41,16 @@ class APIClient {
         const status = error.response?.status
 
         if (status === 401) {
-          toast.error("Session expired", { description: "Please sign in again." })
+          // The token is wrong or has been rotated. Dropping it is also what
+          // re-prompts: clearToken notifies the guard's subscription, so there
+          // is one mechanism here rather than a clear plus a separate signal
+          // that can drift out of step with it.
+          clearToken()
+          toast.error("Signed out", { description: "The operator token was rejected." })
         } else if (status === 403) {
-          toast.error("Access denied", { description: message })
+          toast.error("Not permitted", {
+            description: message ?? "This action needs an operator token.",
+          })
         } else if (status === 404) {
           console.warn("Resource not found:", error.config?.url)
         } else if (status === 422) {

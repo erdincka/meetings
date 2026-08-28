@@ -1,9 +1,9 @@
 """System status and one-time setup.
 
-The setup wizard's job changed in Phase 1. It no longer receives a database
-URI and API keys over HTTP and writes them to a plaintext file; credentials
-are environment-supplied from the ``meetings-runtime`` Secret. The wizard now
-*validates* what the operator configured, runs migrations, and seeds.
+The wizard validates what the operator configured, runs migrations, and
+seeds. It deliberately does *not* receive credentials over HTTP: the database
+URI and both API keys are environment-supplied from the ``meetings-runtime``
+Secret, so there is nothing here for a misdirected request to write.
 """
 
 from __future__ import annotations

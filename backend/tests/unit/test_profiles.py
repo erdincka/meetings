@@ -17,6 +17,7 @@ from app.orchestration.profiles import (
     COUNSEL,
     PROFILES,
     QUANT,
+    Profile,
     ProfileDriftError,
     for_persona,
     resolve,
@@ -108,7 +109,7 @@ class TestSeedMapping:
             ("VP", "analyst"),
             ("GC", "counsel"),
             ("CEO", "chief"),
-            ("Inspector", "baseline"),
+            ("Inspector", "analyst"),
         ],
     )
     def test_titles_map_to_expected_profiles(self, title: str, expected: str) -> None:
@@ -154,3 +155,39 @@ class TestMeetingStartValidation:
         assert "Jane Roe" in message
         assert "mint_money" in message
         assert "Cannot start" in message
+
+
+class TestWarmPoolInvariant:
+    """Every profile must have a warm pool it can actually claim from.
+
+    This is not a sizing preference. A sandbox is obtained only through a
+    SandboxClaim, and SandboxClaim.spec offers `warmPoolRef` and nothing else --
+    no template reference, so no cold start. A profile whose warm pool has zero
+    replicas gets no SandboxWarmPool from the chart, stays selectable, and fails
+    every claim with "SandboxWarmPool not found" while consuming a turn per
+    attempt. `strategist` shipped that way and made any meeting including the
+    Architect persona unable to hear from it.
+    """
+
+    def test_every_profile_has_at_least_one_warm_replica(self) -> None:
+        zero = [p.name for p in PROFILES if p.warm_replicas < 1]
+        assert not zero, (
+            f"profiles with no warm pool: {zero}. These are selectable but "
+            "unclaimable -- see the class docstring."
+        )
+
+    def test_every_seeded_persona_resolves_to_a_claimable_profile(self) -> None:
+        """The path that actually broke: a seeded title selected a profile with
+        no pool behind it."""
+        for profile in PROFILES:
+            for title in profile.seed_titles:
+                assert for_persona(title).warm_replicas >= 1, (
+                    f"seeded title {title!r} resolves to {profile.name!r}, "
+                    "which has no warm pool to claim from"
+                )
+
+    def test_constructing_a_zero_replica_profile_is_refused(self) -> None:
+        """At import time, not at claim time: a profile nobody selects during a
+        small test would otherwise ship broken."""
+        with pytest.raises(ValueError, match="warm_replicas"):
+            Profile(name="unclaimable", tools=frozenset(), warm_replicas=0)
