@@ -78,6 +78,21 @@ def migrated_database() -> None:
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     command.upgrade(config, "head")
 
+    # The checkpoint tables are not Alembic's -- LangGraph owns them, and the
+    # application creates them in its startup hook. These tests drive the ASGI
+    # app directly and so never run that hook, which on a fresh database left
+    # every meeting failing with `relation "checkpoints" does not exist`. It
+    # passed on a developer machine only because a previous run had created
+    # them.
+    #
+    # Calling the application's own function rather than reproducing it: a test
+    # fixture that builds the schema its own way stops testing the real one.
+    import asyncio
+
+    from app.main import _prepare_checkpointer
+
+    asyncio.run(_prepare_checkpointer())
+
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:

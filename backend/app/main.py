@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -54,6 +55,11 @@ logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 logger = structlog.get_logger(__name__)
 
+# Creating the checkpoint tables and their indexes on a fresh database is not
+# instant on a small cluster, so the budget is generous. It exists to stop an
+# unreachable database hanging startup, not to police a slow one.
+CHECKPOINTER_SETUP_TIMEOUT = 60
+
 
 async def _prepare_checkpointer() -> None:
     """Ensure the LangGraph checkpointer schema exists before serving traffic."""
@@ -67,9 +73,18 @@ async def _prepare_checkpointer() -> None:
         async with AsyncConnectionPool(
             dsn, max_size=2, min_size=1, kwargs={"autocommit": True}
         ) as pool:
-            # Same row-factory mismatch as in meeting_executor: the saver sets
-            # its own per-cursor factory, so this is safe at runtime.
-            await AsyncPostgresSaver(pool).setup()  # type: ignore[arg-type]
+            # Startup is the only safe moment for this. setup() issues CREATE
+            # INDEX CONCURRENTLY, which waits for every transaction open
+            # anywhere in the database; here nothing is serving yet, so there is
+            # nothing to wait on. Doing it per meeting instead meant waiting on
+            # the application's own in-flight sessions, which never won.
+            #
+            # Bounded, because an unreachable database would otherwise hang the
+            # startup hook rather than falling through to the warning below.
+            async with asyncio.timeout(CHECKPOINTER_SETUP_TIMEOUT):
+                # Same row-factory mismatch as in meeting_executor: the saver
+                # sets its own per-cursor factory, so this is safe at runtime.
+                await AsyncPostgresSaver(pool).setup()  # type: ignore[arg-type]
         logger.info("checkpointer_schema_ready")
     except Exception as exc:
         # Not fatal: the executor still refuses to run a meeting it cannot

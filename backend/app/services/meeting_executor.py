@@ -1,4 +1,3 @@
-import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
@@ -24,7 +23,6 @@ logger = structlog.get_logger(__name__)
 
 # Generous: only the first call does real work, and failing here refuses the
 # meeting outright.
-CHECKPOINTER_SETUP_TIMEOUT = 60
 
 
 def _now_iso() -> str:
@@ -153,14 +151,16 @@ async def run_meeting_execution(meeting_id: str) -> AsyncGenerator[dict[str, Any
                     # created with psycopg's default tuple factory. The saver sets
                     # its own row factory per cursor, so this is safe at runtime.
                     checkpointer = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
-                    # setup() is idempotent but on a fresh database it creates
-                    # several tables and indexes, which comfortably exceeds a
-                    # 10s budget on a small cluster. Timing out there meant the
-                    # very first meeting always failed, and the second
-                    # succeeded -- a confusing, self-healing symptom.
-                    async with asyncio.timeout(CHECKPOINTER_SETUP_TIMEOUT):
-                        await checkpointer.setup()
 
+                    # No setup() here. The schema is prepared once at startup
+                    # (see app.main), which is the only safe moment for it:
+                    # setup() issues CREATE INDEX CONCURRENTLY, and that waits
+                    # for *every* transaction open anywhere in the database to
+                    # finish. Called from inside a request, it therefore waits
+                    # on the application's own in-flight sessions and cannot win
+                    # -- it blocked until the timeout and failed the meeting,
+                    # while presenting as "the database is slow". Raising the
+                    # timeout only lengthened the stall.
                     logger.info("durable_checkpoint_active", meeting_id=meeting_id)
                     async for event in _execute_with_checkpointer(checkpointer):
                         yield event

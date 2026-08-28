@@ -63,7 +63,23 @@ class SandboxAuthenticator:
             try:
                 config.load_incluster_config()
             except Exception:
-                await config.load_kube_config()
+                try:
+                    await config.load_kube_config()
+                except Exception as exc:
+                    # Fail closed, and as a refusal rather than a crash.
+                    #
+                    # Without cluster config there is no way to verify a
+                    # TokenReview, so no caller can be trusted -- but the
+                    # ConfigException propagated as a 500, which says "this
+                    # backend is broken" when the truthful answer is "this
+                    # caller is not authenticated". A sandbox surface that
+                    # answers 500 to an unauthenticated request also cannot be
+                    # probed for liveness, and it hides the actual fault.
+                    logger.error("sandbox_auth_no_cluster_config", error=str(exc))
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Sandbox authentication is unavailable: no cluster configuration",
+                    ) from exc
             self._api = client
         return self._api
 
