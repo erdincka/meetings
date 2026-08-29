@@ -54,7 +54,17 @@ persona can reach is decided by the cluster, at five layers:
 
 The demonstrable moment: a General Counsel persona asked to run code gets a
 **403 from the Kubernetes API server**, surfaced in the UI's audit matrix. Least
-privilege you can screenshot, not least privilege you assert.
+privilege you can screenshot, not least privilege you assert — and you do not
+have to take the screenshot on trust, because the same decision is one command
+away:
+
+![Verifying enforcement: gVisor confirmed from inside a sandbox, one ServiceAccount per persona, and the API server refusing the General Counsel while allowing the Finance Director](assets/screenshot-enforcement.png)
+
+Every persona pod runs the same image. What differs is the ServiceAccount, the
+RBAC binding, the NetworkPolicy and the Secrets mounted into it — so the refusal
+belongs to the API server, not to the prompt. The commands that produce this are
+in [docs/verify-enforcement.md](docs/verify-enforcement.md); re-run them after
+changing a profile.
 
 ## Architecture
 
