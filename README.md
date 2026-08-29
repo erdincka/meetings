@@ -1,13 +1,35 @@
 # Agentic Meetings
 
-A multi-agent meeting simulator where each AI participant runs inside its own
-**gVisor-isolated Kubernetes sandbox**, and what each agent is allowed to do is
-enforced by Kubernetes — ServiceAccounts, RBAC, NetworkPolicy and per-template
-Secrets — rather than by asking it nicely in a prompt.
+Give an AI agent tools — a database, a shell, a network call — and the usual way
+to stop it misusing them is to write "please don't" in the prompt. That is a
+request, not a control. **Agentic Meetings** is a working demonstration of the
+alternative: a multi-agent meeting simulator, in which a supervisor picks who
+speaks next and each participant argues from their role over the company's
+documents, where every agent runs inside its own kernel-isolated Kubernetes
+sandbox and what each one may do is decided by the cluster — ServiceAccounts,
+RBAC, NetworkPolicy and per-template Secrets — rather than by the prompt. Ask an
+agent to do something outside its remit and it gets a 403 from the Kubernetes API
+server, surfaced in the UI. It is built for platform and infrastructure teams who
+have been asked to run agents in production and need an answer to "what stops it
+doing that?" that survives a security review.
 
 A reference implementation of [Kubernetes Agent
 Sandbox](https://agent-sandbox.sigs.k8s.io/) (SIG Apps), on CloudNativePG and
 Gateway API.
+
+![A meeting in progress: agents take turns while the events log records each supervisor decision](assets/demo.gif)
+
+<table>
+<tr>
+<td width="50%"><img src="assets/screenshot-roles.png" alt="The agent registry: nine personas, each with a tone, a risk level and a tool grant"></td>
+<td width="50%"><img src="assets/screenshot-conclusion.png" alt="A concluded meeting: notes, agreed actions and identified resource gaps"></td>
+</tr>
+<tr>
+<td><em>Each persona's tool grant resolves to a capability profile, which decides
+which ServiceAccount its sandbox runs under.</em></td>
+<td><em>The meeting ends with a decision record, not just a transcript.</em></td>
+</tr>
+</table>
 
 ## The idea
 
@@ -36,25 +58,33 @@ privilege you can screenshot, not least privilege you assert.
 
 ## Architecture
 
-```
-Browser ──HTTP/WS──▶ Gateway API (Envoy) ──▶ FastAPI backend
-                                              │  LangGraph supervisor + router
-                                              │  (graph state never leaves here)
-                                              ▼
-                              ┌───────────────────────────────┐
-                              │ Tier A: persona sandboxes     │  gVisor
-                              │ one per attendee, warm-pooled │  runtimeClass
-                              │ runs the ReAct loop           │
-                              └───────────────┬───────────────┘
-                                              │ claims (RBAC-gated)
-                                              ▼
-                              ┌───────────────────────────────┐
-                              │ Tier B: exec sandboxes        │  gVisor +
-                              │ model-authored Python         │  deny-all
-                              │ ephemeral, 60s deadline       │  network
-                              └───────────────────────────────┘
+```mermaid
+flowchart TB
+    browser["Browser"]
+    gw["Gateway API · Envoy<br/><i>HTTP + WebSocket</i>"]
+    be["FastAPI backend<br/><b>LangGraph supervisor + router</b><br/><i>graph state never leaves here</i>"]
+    db[("CloudNativePG<br/>Postgres 18 + pgvector<br/><i>retrieval · artifacts · state</i>")]
 
-CloudNativePG (Postgres 18 + pgvector via ImageVolume) ── retrieval, artifacts, state
+    subgraph tierA ["Tier A — persona sandboxes (gVisor)"]
+        pa["one per attendee · warm-pooled<br/>runs the ReAct loop"]
+    end
+
+    subgraph tierB ["Tier B — exec sandboxes (gVisor + deny-all network)"]
+        pb["model-authored Python<br/>ephemeral · 60s deadline"]
+    end
+
+    browser -->|HTTP / WS| gw --> be
+    be -->|dispatch a turn| pa
+    pa -->|"claim (RBAC-gated)"| pb
+    be <--> db
+    pa -.->|"scoped internal API<br/>+ /internal/v1/llm proxy"| be
+
+    classDef tier fill:#eef2ff,stroke:#4f46e5,stroke-width:2px,color:#1e1b4b;
+    classDef core fill:#f8fafc,stroke:#475569,stroke-width:2px,color:#0f172a;
+    class pa,pb tier;
+    class browser,gw,be,db core;
+    style tierA fill:#ffffff,stroke:#c7d2fe,stroke-width:1px,color:#3730a3;
+    style tierB fill:#ffffff,stroke:#c7d2fe,stroke-width:1px,color:#3730a3;
 ```
 
 Two design rules make this coherent:
