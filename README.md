@@ -145,7 +145,7 @@ listener on together; `make observability` installs the stack they point at.
 
 | Requirement | Why |
 |---|---|
-| Kubernetes 1.31+ | `ImageVolume`, which is how pgvector reaches Postgres |
+| Kubernetes 1.34+ | `ImageVolume` for pgvector, and the floor CloudNativePG 1.30 supports |
 | A RuntimeClass with kernel-level isolation | The boundary the whole design rests on |
 | Agent Sandbox v0.5.6+ | `Sandbox`, `SandboxClaim`, `SandboxTemplate`, `SandboxWarmPool` |
 | CloudNativePG 1.30+ | Postgres 18 with pgvector as a declarative extension |
@@ -189,7 +189,7 @@ provider credential.
 
 | Component | Choice | Why |
 |---|---|---|
-| Sandboxes | Agent Sandbox v0.5.6 (`agents.x-k8s.io/v1beta1`) | The emerging standard for agent isolation on Kubernetes |
+| Sandboxes | Agent Sandbox v0.5.6 (`agents.x-k8s.io/v1beta1`) | An emerging Kubernetes-native abstraction for isolated agent workloads |
 | Isolation | gVisor (`runsc`), `systrap` platform | Verified via `/proc/version`, never via a readiness check |
 | Database | CloudNativePG 1.30, Postgres 18 | pgvector arrives as a declarative **ImageVolume** extension, not a custom-baked image |
 | Ingress | Gateway API + Envoy Gateway | A real address, and the WebSocket upgrade the transcript stream needs |

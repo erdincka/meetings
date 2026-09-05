@@ -19,7 +19,7 @@ what that check is checking, and why.
 
 | Requirement | Why | If it is missing |
 |---|---|---|
-| Kubernetes 1.31+ | `ImageVolume`, which is how pgvector reaches Postgres | Hard requirement |
+| Kubernetes 1.34+ | `ImageVolume` for pgvector, and the floor CloudNativePG 1.30 supports | Hard requirement |
 | A RuntimeClass with kernel-level isolation | The boundary the whole design rests on | [Fallback tiers](#isolation-tiers) |
 | Agent Sandbox v0.5.6+ (`agents.x-k8s.io/v1beta1`) | Sandbox, SandboxClaim, SandboxTemplate, SandboxWarmPool | Hard requirement |
 | CloudNativePG 1.30+ | Postgres 18 with pgvector as a declarative extension | Hard requirement |
@@ -173,14 +173,20 @@ off the cluster. The backend runs in-cluster, so it reaches sandboxes at
 deploy/cluster/install-prerequisites.sh cnpg
 ```
 
-CloudNativePG 1.30+, and Kubernetes 1.31+ for `ImageVolume`. pgvector arrives as
+CloudNativePG 1.30+, and Kubernetes 1.34+. pgvector arrives as
 a declarative extension mounted from an OCI image rather than baked into a
 custom Postgres build — the extension version becomes a value in
 [`cnpg-cluster.yaml`](../deploy/bootstrap/cnpg-cluster.yaml) instead of a
 Dockerfile you own and must rebuild.
 
-`ImageVolume` is beta and on by default from 1.33. On 1.31 and 1.32 it needs the
-feature gate enabled on the kubelet and apiserver.
+Two things set that floor. `ImageVolume` went alpha in Kubernetes 1.32 behind a
+feature gate, beta and on by default in 1.33, and by 1.35 the gate is gone -- so on
+its own it would put the floor at 1.33. CloudNativePG raises it: 1.30 lists
+Kubernetes 1.34, 1.35 and 1.36 as supported, with 1.31 through 1.33 tested but
+explicitly not supported. 1.34+ is the higher of the two.
+
+If you would rather bake pgvector into a Postgres image the conventional way, the
+Kubernetes floor drops considerably -- but this repo ships the ImageVolume path.
 
 Verify pgvector is genuinely loaded, rather than merely declared:
 

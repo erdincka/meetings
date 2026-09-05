@@ -283,7 +283,7 @@ that were otherwise going fine. It now costs one turn.
 
 | Component | Choice | Why |
 |---|---|---|
-| Sandboxes | Agent Sandbox v0.5.6 (`agents.x-k8s.io/v1beta1`) | The emerging standard for agent isolation on Kubernetes |
+| Sandboxes | Agent Sandbox v0.5.6 (`agents.x-k8s.io/v1beta1`) | An emerging Kubernetes-native abstraction for isolated agent workloads |
 | Isolation | gVisor (`runsc`), `systrap` platform | Verified via `/proc/version`, never via a readiness check — see the sandbox security model |
 | Database | CloudNativePG 1.30, Postgres 18 | pgvector arrives as a declarative **ImageVolume** extension, not a custom-baked image |
 | Ingress | Gateway API + Envoy Gateway | A routable address, and the WebSocket upgrade the transcript stream needs |
