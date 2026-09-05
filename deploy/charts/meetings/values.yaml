@@ -92,6 +92,10 @@ sandbox:
   execImage: meetings-exec-python:latest
   # Read-only DSN for the metrics schema, mounted only by profiles granted it.
   metricsSecret: meetings-metrics-ro
+  # Addresses a persona sandbox may reach on the apiserver ports. Empty means
+  # any address on 443 and 6443 -- which is the whole HTTPS internet, not just
+  # the control plane. Rendered from APISERVER_CIDRS; see cluster.env.example.
+  apiserverCIDRs: []
   execWarmReplicas: 1
   execResources:
     requests: {cpu: 100m, memory: 256Mi}

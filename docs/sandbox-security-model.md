@@ -49,15 +49,23 @@ signal that cannot tell the two cases apart.
 | Runs | one attendee's ReAct loop | model-authored Python |
 | Namespace | `meetings-sandboxes` | `meetings-exec` |
 | Lifetime | one meeting | one call, 60s deadline |
-| Egress | backend internal API, DNS, apiserver | **none** |
+| Egress | backend internal API, DNS, apiserver (pinned when `APISERVER_CIDRS` is set) | **none** |
 | Claimed by | the backend, from a warm pool | the Tier A pod itself, if RBAC allows |
 
 Tier A no longer reaches the model directly either: it calls the backend's
-`/internal/v1/llm` proxy, so a persona sandbox has no route off the cluster
-except the apiserver, and carries no provider credential. That replaced an
-ipBlock list of the endpoint's addresses, which a CDN-fronted provider cannot
-supply -- the only rule that worked was `0.0.0.0/0`, granting the whole internet
-to the least-trusted component in order to reach one host.
+`/internal/v1/llm` proxy, so a persona sandbox carries no provider credential.
+That replaced an ipBlock list of the endpoint's addresses, which a CDN-fronted
+provider cannot supply -- the only rule that worked was `0.0.0.0/0`, granting
+the whole internet to the least-trusted component in order to reach one host.
+
+Set `APISERVER_CIDRS` in `cluster.env` and the apiserver route is pinned to the
+control plane, at which point a persona sandbox genuinely has no route off the
+cluster. Leave it empty and the rule falls back to any address on TCP 443 and
+6443 -- which is a *port* restriction, not a destination one, and 443 is the
+whole HTTPS internet. The sandbox still holds no credential worth taking, but do
+not describe that fallback as an egress boundary. This was exactly the shape of
+error the rest of this document warns about: a control that reads as closed and
+is not.
 
 Tier B is where the strongest statement holds: code the model wrote runs with no
 network route to anything. Not to the database, not to the backend, not to the

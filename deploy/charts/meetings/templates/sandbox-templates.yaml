@@ -162,16 +162,39 @@ spec:
       #
       # Making the denial legible is worth more than the extra layer, because a
       # denial nobody can see is a control nobody can trust.
+      #
+      # Pin this to the apiserver's own addresses. Set APISERVER_CIDRS in
+      # cluster.env to both the `kubernetes` Service ClusterIP and the real
+      # endpoint addresses: whether a NetworkPolicy implementation matches the
+      # ClusterIP or the DNAT'd endpoint varies, so naming both is what makes
+      # this portable rather than a coin toss.
+      {{- $apiserverCIDRs := $root.Values.sandbox.apiserverCIDRs | default list }}
+      {{- if $apiserverCIDRs }}
+      - to:
+          {{- range $apiserverCIDRs }}
+          - ipBlock:
+              cidr: {{ . | quote }}
+          {{- end }}
+        ports:
+          - {protocol: TCP, port: 443}
+          - {protocol: TCP, port: 6443}
+      {{- else }}
+      # APISERVER_CIDRS is unset, so this falls back to any address on the two
+      # apiserver ports. Be clear about what that means: 443 is the whole HTTPS
+      # internet, so a compromised sandbox could open a connection to anywhere
+      # that listens on it. The sandbox still holds no provider credential and
+      # no database route, but this is a port restriction, not a destination
+      # one. Set APISERVER_CIDRS to close it.
       - to:
           - ipBlock:
               cidr: 0.0.0.0/0
         ports:
           - {protocol: TCP, port: 443}
           - {protocol: TCP, port: 6443}
+      {{- end }}
       # No rule for the model endpoint, deliberately. Personas reach it through
-      # the backend's /internal/v1/llm proxy over the route already opened
-      # above, so a sandbox has no path off the cluster at all beyond the
-      # apiserver.
+      # the backend's /internal/v1/llm proxy, so no sandbox holds a provider
+      # credential or needs a route to the provider.
       #
       # This replaced an ipBlock list built from INFERENCE_EGRESS_CIDRS, which
       # could not work for a hosted provider: NetworkPolicy matches addresses,

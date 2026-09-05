@@ -26,6 +26,8 @@ sandbox:
   # tier by changing this one value; see docs/requirements.md for what each
   # tier gives up.
   runtimeClassName: ${SANDBOX_RUNTIME_CLASS}
+  # Pins sandbox egress to the control plane instead of every address on 443.
+  apiserverCIDRs: ${APISERVER_CIDRS:list}
 
 corpus:
   enabled: true
