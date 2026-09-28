@@ -34,6 +34,11 @@ TAG=${IMAGE_TAG:-latest}
 . "$REPO/scripts/builder-target.sh"
 BUILDER=$(normalize_builder "${BUILDER:-}")
 PUSH=${1:-}
+DOCKER="docker"
+if [ -n "${DOCKER_BUILD_CONTEXT:-}" ]; then
+  DOCKER="docker --context $DOCKER_BUILD_CONTEXT"
+  BUILDER=""
+fi
 
 IMAGES="BACKEND_TAG:meetings-backend
 FRONTEND_TAG:meetings-frontend
@@ -46,7 +51,7 @@ CORPUS_TAG:meetings-corpus"
 query=""
 for entry in $IMAGES; do
   image="${entry#*:}"
-  query="${query}docker image inspect $REGISTRY/$image:latest --format '$image {{.Id}}' 2>/dev/null || echo '$image MISSING';"
+  query="${query}$DOCKER image inspect $REGISTRY/$image:latest --format '$image {{.Id}}' 2>/dev/null || echo '$image MISSING';"
 done
 
 if [ -n "$BUILDER" ]; then
@@ -72,7 +77,7 @@ for entry in $IMAGES; do
   built=$((built + 1))
   short=$(echo "${id#sha256:}" | cut -c1-12)
   echo "${var}=${REGISTRY}/${image}:${short}"
-  push_cmd="${push_cmd}docker tag $REGISTRY/$image:latest $REGISTRY/$image:$short;docker push -q $REGISTRY/$image:$short >/dev/null;"
+  push_cmd="${push_cmd}$DOCKER tag $REGISTRY/$image:latest $REGISTRY/$image:$short;$DOCKER push -q $REGISTRY/$image:$short >/dev/null;"
 done
 
 if [ "$built" -eq 0 ]; then

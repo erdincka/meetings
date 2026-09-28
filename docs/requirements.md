@@ -21,10 +21,10 @@ what that check is checking, and why.
 |---|---|---|
 | Kubernetes 1.34+ | `ImageVolume` for pgvector, and the floor CloudNativePG 1.30 supports | Hard requirement |
 | A RuntimeClass with kernel-level isolation | The boundary the whole design rests on | [Fallback tiers](#isolation-tiers) |
-| Agent Sandbox v0.5.6+ (`agents.x-k8s.io/v1beta1`) | Sandbox, SandboxClaim, SandboxTemplate, SandboxWarmPool | Hard requirement |
+| Agent Sandbox v1.0.4+ (`agents.x-k8s.io/v1beta1`) | Sandbox, SandboxClaim, SandboxTemplate, SandboxWarmPool | Hard requirement |
 | CloudNativePG 1.30+ | Postgres 18 with pgvector as a declarative extension | Hard requirement |
 | Gateway API + a GatewayClass with a running controller | WebSocket upgrade for the transcript stream | Hard requirement |
-| A CNI that **enforces** NetworkPolicy | Two of the five enforcement layers | Two layers become decorative |
+| A CNI that **enforces** NetworkPolicy | Two of the enforcement layers | Two layers become decorative |
 | A default StorageClass | CNPG provisions its own volumes | Hard requirement |
 | A LoadBalancer implementation | Reaching the Gateway | Optional — see [Ingress](#ingress) |
 
@@ -110,7 +110,7 @@ Never weaken that assertion to a readiness check.
 
 ## NetworkPolicy enforcement
 
-Two of the five enforcement layers are NetworkPolicy. **Every CNI accepts
+Two of the enforcement layers are NetworkPolicy. **Every CNI accepts
 NetworkPolicy objects; not every CNI enforces them**, and one that quietly
 ignores them is invisible from outside — the policies apply cleanly and
 `kubectl get networkpolicy` is reassuring.
@@ -135,7 +135,7 @@ reports an enforcing cluster as unenforced.
 
 If your CNI does not enforce policy, the app still runs and the RBAC layer —
 which is the authoritative control for code execution — still holds. Say plainly
-which layers are inert rather than presenting five.
+which layers are inert rather than presenting all seven.
 
 ---
 
@@ -146,24 +146,39 @@ deploy/cluster/install-prerequisites.sh agent-sandbox
 ```
 
 Installs the CRDs and controller from the upstream release bundle with
-server-side apply. `v0.5.6` or newer, for `agents.x-k8s.io/v1beta1`.
+server-side apply. `v1.0.4` or newer. The APIs are still `agents.x-k8s.io/v1beta1`: 1.0 is a product
+version, and what it removed is `v1alpha1` and the conversion webhook.
 
-One controller behaviour is worth knowing up front, because the default is
-sensible and this project deliberately takes the other path. Sandboxes created
-from a SandboxTemplate default to `networkPolicyManagement: Managed`: where a
-template declares no `networkPolicy`, the controller synthesises one allowing
-ingress **only from the Sandbox Router** and egress to the public internet with
-every RFC1918 range excluded. Under that default, a direct backend-to-sandbox
-call is denied.
+The release bundle installs the controller and the CRDs. It does not install
+the Sandbox Router, which this project runs itself -- see below.
 
-The default assumes traffic goes through the Router. This project declares its
-policy explicitly instead (see
-[`sandbox-templates.yaml`](../deploy/charts/meetings/templates/sandbox-templates.yaml)),
-opening a short list of routes: ingress from the backend on 8080, and egress to
-the backend's internal API on 8000 plus DNS and the apiserver. Model calls go
-through the backend's proxy on that same internal API, so no sandbox has a route
-off the cluster. The backend runs in-cluster, so it reaches sandboxes at
-`status.serviceFQDN` directly and the Router is not on the hot path.
+### What the controller does by default, and what this project does instead
+
+Sandboxes created from a SandboxTemplate default to `networkPolicyManagement:
+Managed`. Where a template declares no `networkPolicy`, the controller
+synthesises one: ingress only from the Sandbox Router in `agent-sandbox-system`,
+and egress to the **whole public internet**, with the private ranges excluded
+and cluster DNS deliberately blocked.
+
+That default is built for a sandbox that browses the web and is reached through
+a shared router. Neither half suits this project, so every template declares its
+policy explicitly (see
+[`sandbox-templates.yaml`](../deploy/charts/meetings/templates/sandbox-templates.yaml)):
+ingress from this release's own router and nothing else, and egress to the
+backend's internal API, DNS and the apiserver. Model calls go through the
+backend's proxy, so no sandbox has a route off the cluster.
+
+### The Sandbox Router
+
+Upstream's Go router (`registry.k8s.io/agent-sandbox/sandbox-router-go`),
+unmodified, deployed by this chart in scoped-token mode. There is nothing to
+install beforehand. Two instances run in the release namespace, one in front of
+each sandbox tier, and `make deploy` creates the signing keypair on first run.
+
+It needs the cluster to let a ServiceAccount list pods in the two sandbox
+namespaces, which the chart grants as namespaced Roles. Why it runs per release
+rather than as the shared instance upstream's manifests install is in
+[sandbox-security-model.md](sandbox-security-model.md#one-router-per-release-not-one-per-cluster).
 
 ---
 
@@ -212,8 +227,14 @@ works, and nothing at all is watching. A Gateway API surface with no
 GatewayClass is inert, and looks installed. `make preflight` checks for the
 GatewayClass separately for exactly this reason.
 
-If your cluster already has a Gateway API implementation, set
-`gateway.className` to your GatewayClass and skip this. If it has an Ingress
+If your cluster already has a Gateway API implementation, set `GATEWAY_CLASS`
+to your GatewayClass and skip this. If it already has a *Gateway* that projects
+share -- one address, one wildcard DNS record -- set `GATEWAY_NAME` and
+`GATEWAY_NAMESPACE` as well: the chart then creates no Gateway of its own and
+attaches a route to yours. That Gateway must admit routes from the `meetings`
+namespace and have a listener whose hostname covers `meetings.${APP_DOMAIN}`;
+its certificate and any redirect are its owner's, so the `APP_TLS_*` settings
+are ignored in this mode. If it has an Ingress
 controller instead, set `gateway.enabled=false` and route to the
 `meetings-frontend` and `meetings-backend` Services yourself — the only
 requirement the app places on ingress is that `/api/v1` reaches the backend with
@@ -288,9 +309,9 @@ Installing the chart creates three namespaces and the RBAC that separates them:
 
 | Namespace | Holds |
 |---|---|
-| `meetings` | Backend, frontend, Gateway, the CNPG cluster |
+| `meetings` | Backend, frontend, the two Sandbox Routers, the CNPG cluster, and the Gateway unless you attach to an existing one |
 | `meetings-sandboxes` | Tier A — one persona pod per attendee, warm-pooled per profile |
 | `meetings-exec` | Tier B — the code-execution warm pool, deny-all egress |
 
 You need cluster-admin to install, because the chart creates namespaces,
-ClusterRoles and CRDs' custom resources. It does not need cluster-admin to run.
+ClusterRoles, a ValidatingAdmissionPolicy and CRDs' custom resources. It does not need cluster-admin to run.

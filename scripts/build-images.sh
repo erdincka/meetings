@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # Build the five images and push them to the registry in cluster.env.
 #
-# Two modes, chosen by whether BUILDER is set:
+# Three modes:
 #
-#   BUILDER empty   build locally with the Docker daemon on this machine
-#   BUILDER set     rsync the tree to that SSH target and build there
+#   DOCKER_BUILD_CONTEXT set   build from this tree on the daemon that Docker
+#                              context names (`docker context ls`)
+#   BUILDER set                rsync the tree to that SSH target and build there
+#   neither                    build with the Docker daemon on this machine
+#
+# A Docker context wins when both are set. It needs nothing on the far side but
+# a daemon -- no checkout to keep in step, no directory to own -- so it is the
+# one to prefer where a context already exists.
 #
 # The remote mode exists for the case where the workstation and the nodes differ
 # in architecture. Cross-building Python and Node images under emulation is slow
@@ -27,6 +33,11 @@ REGISTRY=${IMAGE_REGISTRY:?set IMAGE_REGISTRY in deploy/cluster/cluster.env}
 . "$REPO/scripts/builder-target.sh"
 BUILDER=$(normalize_builder "${BUILDER:-}")
 BUILDER_DIR=${BUILDER_DIR:-/home/ubuntu/meetings}
+DOCKER="docker"
+if [ -n "${DOCKER_BUILD_CONTEXT:-}" ]; then
+  DOCKER="docker --context $DOCKER_BUILD_CONTEXT"
+  BUILDER=""
+fi
 
 # name:context:target -- an empty target means the Dockerfile has no stages to
 # select between.
@@ -45,13 +56,13 @@ build_script() {
     target=$(echo "$entry" | cut -d: -f3)
     local flags=""
     [ -n "$target" ] && flags="--target $target"
-    cmds="${cmds}docker build -q $flags -t $REGISTRY/$name:latest $context && "
+    cmds="${cmds}$DOCKER build -q $flags -t $REGISTRY/$name:latest $context && "
   done
   echo "${cmds}true"
 }
 
 if [ -z "$BUILDER" ]; then
-  echo ">> building locally"
+  echo ">> building with: $DOCKER"
   ( cd "$REPO" && eval "$(build_script)" ) >/dev/null
 else
   echo ">> building on $BUILDER"

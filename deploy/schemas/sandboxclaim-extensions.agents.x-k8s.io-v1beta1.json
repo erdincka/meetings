@@ -318,6 +318,9 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "serviceFQDN": {
+              "type": "string"
             }
           },
           "type": "object"

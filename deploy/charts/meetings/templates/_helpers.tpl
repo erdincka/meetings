@@ -45,3 +45,71 @@ sandbox ends up told to export traces to a collector its own policy forbids.
 {{- define "meetings.otlpEndpoint" -}}
 {{- if .Values.observability.enabled }}{{ .Values.observability.otlpEndpoint }}{{ end -}}
 {{- end -}}
+
+{{/*
+The Sandbox Router for one tier, as its callers address it.
+*/}}
+{{- define "meetings.routerUrl" -}}
+http://{{ include "meetings.name" .root }}-sandbox-router-{{ .tier }}.{{ .root.Release.Namespace }}.svc:8080
+{{- end -}}
+
+{{/*
+A NetworkPolicy peer selecting one tier's router pods.
+*/}}
+{{- define "meetings.routerPeer" -}}
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ .root.Release.Namespace }}
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "meetings.name" .root }}
+      app.kubernetes.io/component: sandbox-router
+      meetings/router-tier: {{ .tier }}
+{{- end -}}
+
+{{- define "meetings.routerCommonIngress" -}}
+# Kubelet probes arrive at the pod address, from the node.
+- ports:
+    - {protocol: TCP, port: 8081}
+{{- if .Values.observability.enabled }}
+- from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.observability.namespace }}
+  ports:
+    - {protocol: TCP, port: 9090}
+{{- end }}
+{{- end -}}
+
+{{- define "meetings.routerCommonEgress" -}}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+  ports:
+    - {protocol: UDP, port: 53}
+    - {protocol: TCP, port: 53}
+# The apiserver, for the pod cache. Pinned like the sandboxes' own route.
+{{- $cidrs := .Values.sandbox.apiserverCIDRs | default list }}
+- to:
+    {{- if $cidrs }}
+    {{- range $cidrs }}
+    - ipBlock:
+        cidr: {{ . | quote }}
+    {{- end }}
+    {{- else }}
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    {{- end }}
+  ports:
+    - {protocol: TCP, port: 443}
+    - {protocol: TCP, port: 6443}
+{{- with (include "meetings.otlpEndpoint" .) }}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ $.Values.observability.namespace }}
+  ports:
+    - {protocol: TCP, port: {{ regexFind ":[0-9]+$" . | trimPrefix ":" | default "4317" }}}
+{{- end }}
+{{- end -}}

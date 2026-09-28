@@ -22,4 +22,51 @@ spec:
     - port: http
       path: /metrics
       interval: 15s
+---
+{{/*
+The routers: authorisation decisions by verdict, and what reached a sandbox.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "meetings.name" . }}-sandbox-router
+  labels:
+    {{- include "meetings.labels" . | nindent 4 }}
+    release: {{ .Values.observability.prometheusRelease }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "meetings.name" . }}
+      app.kubernetes.io/component: sandbox-router
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+{{- if .Values.observability.scrapeController }}
+---
+{{/*
+The Agent Sandbox controller: claims by launch type, warm against cold, and how
+long a claim takes to become ready. Lives in our namespace and selects across
+to the controller's, because the controller is the platform's and the interest
+in its numbers is ours.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "meetings.name" . }}-agent-sandbox-controller
+  labels:
+    {{- include "meetings.labels" . | nindent 4 }}
+    release: {{ .Values.observability.prometheusRelease }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.observability.controllerNamespace }}
+  selector:
+    matchLabels:
+      app: agent-sandbox-controller
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+{{- end }}
 {{- end }}

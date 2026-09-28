@@ -16,6 +16,7 @@ costs one round trip instead of four.
 
 from __future__ import annotations
 
+import functools
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -206,7 +207,10 @@ def create_role_agent_node(
             try:
                 # Released by the meeting executor when the meeting ends, not
                 # here: this sandbox serves every turn this persona takes.
-                async with PersonaSandboxClient(handle.base_url) as client:
+                async with PersonaSandboxClient(
+                    handle.base_url,
+                    headers_for=functools.partial(manager.headers_for, handle),
+                ) as client:
                     if manager.needs_bind(meeting_id, agent_id):
                         await client.bind(bind)
                         manager.mark_bound(meeting_id, agent_id)

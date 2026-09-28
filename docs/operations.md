@@ -149,10 +149,13 @@ success having changed nothing, which is the worst shape of failure because it
 is invisible. Tagging by digest makes the tag change exactly when the content
 changes, so identical content also does not churn pods.
 
-Setting `BUILDER` to an SSH target builds there instead of locally. That exists
+Setting `DOCKER_BUILD_CONTEXT` to a Docker context builds on that context's
+daemon, from this tree, and is the simplest option where a context already
+exists. Setting `BUILDER` to an SSH target copies the tree there and builds it.
+Both exist 
 for the case where your workstation and your nodes differ in architecture, where
 cross-building Python and Node images under emulation is slow enough to hurt an
-inner loop. It is an optimisation; the local path produces identical images.
+inner loop. They are an optimisation; the local path produces identical images.
 
 Self-built images are not signed by this repository's CI, and `make
 verify-images` will correctly refuse them.
@@ -188,6 +191,12 @@ spanning all three trust boundaries. That is what makes "slow", "denied" and
 "broken" three distinguishable outcomes rather than one indistinguishable pause
 — and a system where those three look identical from outside is not one to grant
 more autonomy to, however good its isolation is.
+
+With observability on, Prometheus also scrapes the two routers and the Agent
+Sandbox controller. The router's `sandbox_router_authz_decisions_total` counts
+every allow and deny; the controller's `agent_sandbox_claim_creation_total`
+separates warm claims from cold ones, which is the number that says whether the
+warm pools are sized correctly.
 
 Metric labels are low-cardinality by construction: a persona's *profile*, never
 its agent id. Denials are counted separately from errors, because collapsing
@@ -288,8 +297,39 @@ Cleanup has three mechanisms, because any one alone leaks pods:
 3. A startup sweep for claims this backend never labelled, which step 2 cannot
    see because it matches on a label only this process applies.
 
-The SandboxTemplate also carries a shutdown policy, so an orphan eventually
-reaps itself even if the backend never comes back at all.
+Every claim also carries a shutdown time that the controller enforces: four
+hours for a persona sandbox (`sandbox.maxLifetimeSeconds`), and the execution
+deadline plus a minute for an exec sandbox. An orphan is removed even if the
+backend never comes back at all; the sweeps above are what make that prompt.
+
+### The router keys
+
+`make deploy` creates an Ed25519 keypair on first run and leaves it alone
+afterwards. The private key is in `meetings-router-signing`, mounted into the
+backend; the public key is in `meetings-router-verification`, mounted into the
+routers. Neither is rendered by the chart, so neither appears in `helm get
+values` or the release Secret.
+
+To rotate without refusing requests in flight, add before you remove:
+
+1. Add a second entry to `keys.json` in `meetings-router-verification`, under a
+   new key ID, and restart the routers. They read keys at start.
+2. Replace the key in `meetings-router-signing`, set `router.keyId` to the new
+   ID, and deploy. The backend now signs with the new key.
+3. Remove the old entry from `keys.json` and restart the routers again.
+
+### What the cluster did with a sandbox
+
+The meeting page lists the Agent Sandbox controller's Events for the sandboxes
+a running meeting holds, beside the capability matrix. The same data is at
+`GET /api/v1/meetings/{id}/sandbox-events`.
+
+It is a live view. Kubernetes keeps an Event for about an hour, and the link
+from a sandbox to a persona is held in the backend's memory, so once a meeting
+ends there is nothing to show. For a record that outlasts the meeting, the
+backend logs `sandbox_acquired`, `exec_token_issued` and `sandbox_released`
+with the sandbox UID, and each router logs every request with its trace ID --
+ship those somewhere that keeps them.
 
 ### Idle `persona-*` pods are the warm pool, not a leak
 

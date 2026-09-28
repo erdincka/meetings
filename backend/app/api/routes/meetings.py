@@ -176,6 +176,41 @@ async def get_meeting_capabilities(
     )
 
 
+@router.get("/{meeting_id}/sandbox-events", response_model=APIResponse)
+async def get_meeting_sandbox_events(meeting_id: UUID) -> APIResponse:
+    """What the cluster did with this meeting's sandboxes, in its own words.
+
+    The controller's Events for each sandbox the meeting holds, joined to the
+    persona running in it. It complements the capability matrix: that shows
+    what a persona was allowed, this shows what the platform did on its behalf.
+
+    Live only. Kubernetes keeps an Event for about an hour and the join to a
+    persona comes from leases held in memory, so this answers "what is
+    happening" and not "what happened last week" -- see docs/operations.md.
+    """
+    from app.core.config import settings
+    from app.sandbox import kube
+    from app.sandbox.manager import manager
+
+    leases = manager.leases_for(str(meeting_id))
+    by_name = {}
+    for lease in leases:
+        for name in (lease["sandbox"], lease["claim"]):
+            by_name[name] = lease
+    try:
+        events = await kube.lifecycle_events(settings.SANDBOX_NAMESPACE, set(by_name))
+    except Exception as exc:
+        logger.warning("sandbox_events_unavailable", error=str(exc))
+        raise HTTPException(status_code=503, detail="Cluster events are unavailable") from exc
+
+    for event in events:
+        lease = by_name.get(event["name"], {})
+        event["agent_id"] = lease.get("agent_id")
+        event["profile"] = lease.get("profile")
+        event["sandbox_uid"] = lease.get("sandbox_uid")
+    return APIResponse(status="success", data={"leases": leases, "events": events})
+
+
 @router.get("/{meeting_id}/artifacts", response_model=APIResponse)
 async def list_meeting_artifacts(
     meeting_id: UUID, session: AsyncSession = Depends(database.get_db_session)

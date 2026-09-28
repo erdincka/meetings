@@ -7,6 +7,18 @@ handles the WebSocket upgrade that /api/v1/meetings/{id}/ws depends on.
 {{- $tls := .Values.gateway.tls | default dict }}
 {{- $secret := $tls.secretName | default (printf "%s-tls" (include "meetings.name" .)) }}
 {{- $issuer := (($tls.issuerRef).name) | default "" }}
+{{- $existing := .Values.gateway.existing | default dict }}
+{{- /*
+A Gateway of our own, or a route onto one the platform already runs.
+
+On a shared cluster the second is the normal case: one Gateway, one address and
+one wildcard DNS record serve every project, and an application that insists on
+creating its own takes a second LoadBalancer address to publish one hostname.
+Naming an existing Gateway renders no Gateway here at all -- its listeners, its
+certificate and its redirect are the platform owner's, so the tls block below
+is ignored rather than half-applied.
+*/}}
+{{- if not $existing.name }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -70,6 +82,7 @@ spec:
     {{- end }}
     {{- end }}
 ---
+{{- end }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -77,6 +90,13 @@ metadata:
   labels: {{- include "meetings.labels" . | nindent 4 }}
 spec:
   parentRefs:
+    {{- if $existing.name }}
+    - name: {{ $existing.name | quote }}
+      namespace: {{ $existing.namespace | default .Release.Namespace | quote }}
+      {{- with $existing.sectionName }}
+      sectionName: {{ . | quote }}
+      {{- end }}
+    {{- else }}
     - name: {{ include "meetings.name" . }}
       {{- if and $tls.enabled $tls.redirect }}
       {{- /*
@@ -88,6 +108,7 @@ spec:
       */}}
       sectionName: https
       {{- end }}
+    {{- end }}
   hostnames:
     - {{ .Values.gateway.host | quote }}
   rules:
@@ -110,7 +131,7 @@ spec:
       backendRefs:
         - name: {{ include "meetings.name" . }}-frontend
           port: 80
-{{- if and $tls.enabled $tls.redirect }}
+{{- if and $tls.enabled $tls.redirect (not $existing.name) }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

@@ -49,8 +49,10 @@ signal that cannot tell the two cases apart.
 | Runs | one attendee's ReAct loop | model-authored Python |
 | Namespace | `meetings-sandboxes` | `meetings-exec` |
 | Lifetime | one meeting | one call, 60s deadline |
-| Egress | backend internal API, DNS, apiserver (pinned when `APISERVER_CIDRS` is set) | **none** |
+| Egress | backend internal API, DNS, apiserver (pinned when `APISERVER_CIDRS` is set); the exec router, for profiles that may execute code | **none** |
+| Ingress | the persona router, and nothing else | the exec router, and nothing else |
 | Claimed by | the backend, from a warm pool | the Tier A pod itself, if RBAC allows |
+| Longest life | four hours, enforced by the controller | the deadline plus a minute, enforced by the controller |
 
 Tier A no longer reaches the model directly either: it calls the backend's
 `/internal/v1/llm` proxy, so a persona sandbox carries no provider credential.
@@ -75,7 +77,7 @@ The Tier B claim is made **by the persona pod**, using the ServiceAccount token
 mounted into it. The backend is not in that path and cannot broker around the
 apiserver's decision on a persona's behalf.
 
-## The five layers
+## The layers
 
 | Layer | Control | Stops | Observable as |
 |---|---|---|---|
@@ -84,9 +86,15 @@ apiserver's decision on a persona's behalf.
 | Secret | Credentials mounted only into templates that need them | Nothing to steal | file present or absent |
 | NetworkPolicy | Default-deny egress per profile | A stolen credential being *used* | a socket that connects or does not |
 | RBAC | Only some ServiceAccounts may claim an exec sandbox | The agent itself | a 403 from the apiserver |
+| Router token | Every call into a sandbox carries a token naming it by UID, method and path | Reaching a sandbox that is not yours | a 401 or 403 from the router |
+| Admission | The sandbox namespaces refuse a workload without the sandbox RuntimeClass | An unsandboxed pod where isolation is assumed | a refusal from the apiserver |
 
-Only the last one is decided by a system the application cannot influence at
-all. That is why it carries the demo.
+RBAC and admission are decided by a system the application cannot influence at
+all. RBAC is the one that carries the demo, because it is the one a persona
+runs into.
+
+The first five are about what a sandbox may do. The last two are about the
+sandbox itself: who may talk to it, and whether it was allowed to start.
 
 ### Measured
 
@@ -114,6 +122,18 @@ what makes the boundary legible rather than a rule that happens to bind the CEO.
 
 Layers 3 and 4 compose: a persona with no credential also has no route to use
 one, so a DSN leaked into a prompt is useless to the wrong profile.
+
+**Layer 6 — Router token.** A request for one sandbox, sent from the backend:
+
+| bypassing the router | no token | valid token | token for another sandbox | token for another path | tampered signature |
+|---|---|---|---|---|---|
+| blocked | 401 | reaches the sandbox | 403 | 403 | 401 |
+
+And to the exec router, which the backend has no business calling: blocked, by
+NetworkPolicy, before any token is looked at.
+
+**Layer 7 — Admission.** A pod with no RuntimeClass, offered to each sandbox
+namespace: refused in both, by name.
 
 **The same tool, from two profiles, through the real code path:**
 
@@ -181,21 +201,91 @@ the model can read inside the boundary the model is being contained by.
 ### NetworkPolicy is declared explicitly, not managed
 
 Sandboxes created from a SandboxTemplate default to `networkPolicyManagement:
-Managed`, where the controller synthesises a policy allowing ingress only from
-the Sandbox Router. That default is a good one and assumes traffic goes through
-the Router.
+Managed`. With no policy declared, the controller synthesises one: ingress only
+from the shared Sandbox Router, and egress to the whole public internet with
+the private ranges excluded. The ingress half is sound. The egress half suits a
+sandbox that browses the web, and is the opposite of what an agent holding
+company data should have.
 
 This project declares its policy explicitly and opens a short list of routes:
-ingress from the backend on 8080, and egress to the backend's internal API on
-8000 plus DNS and the apiserver -- and, per profile, Postgres, the corpus, the
-exec namespace and the trace collector. Nothing reaches the internet. The
-backend runs in-cluster and reaches sandboxes at `status.serviceFQDN` directly,
-so the Router is not on the hot path.
+ingress from this release's router on 8080, and egress to the backend's
+internal API on 8000 plus DNS and the apiserver -- and, per profile, Postgres,
+the corpus, the exec router and the trace collector. Nothing reaches the
+internet.
 
 *Trade-off accepted:* the policy is ours to maintain, and a new egress
 requirement is a chart change rather than something the controller infers. In
-exchange the routes are readable in one file, and there is one fewer hop in
-every turn.
+exchange the routes are readable in one file.
+
+### Every call into a sandbox goes through the router
+
+An earlier version of this project addressed sandboxes directly, at
+`status.serviceFQDN`, and argued that the router was a hop it did not need.
+NetworkPolicy said which pods could reach a sandbox; nothing said which
+*sandbox* a permitted caller was allowed to reach. A persona that may execute
+code had a route to the whole exec namespace, and so to whatever its colleague
+was running there.
+
+The router closes that. Each request carries a scoped token naming one sandbox
+by UID, one method and one path, signed with a key only the backend holds. The
+router holds the public half, so a compromised router can refuse traffic and
+cannot forge it.
+
+*Trade-off accepted:* one more hop on every turn, and one more component whose
+outage stops a meeting. A token is reusable until it expires and does not cover
+the request body, so it says who may call `/v1/turn` on this sandbox and nothing
+about what the turn contains; it lasts a minute for that reason.
+
+### One router per release, not one per cluster
+
+Upstream installs the router once, in `agent-sandbox-system`, for every tenant.
+This chart runs its own, in its own namespace, with its own key.
+
+A scoped token is bound to a sandbox, but a verification key is not bound to a
+namespace. A router trusts every key in its key file for every sandbox it can
+reach, so on a shared router each tenant's issuer can mint a token for every
+other tenant's sandboxes. A router per release makes the key mean "this
+release's sandboxes", because those are the only ones it can see: its pod cache
+watches one namespace, under a Role in that namespace, and there is one router
+per tier because the cache watches either one namespace or all of them.
+
+*Trade-off accepted:* four small pods instead of a share of two, and a keypair
+per release to look after.
+
+### The backend issues the token for an exec sandbox
+
+A persona that has claimed an exec sandbox needs a token to reach it and holds
+no signing key. It asks the backend, which issues one only if the claim exists
+and carries the caller's own identity. Another persona's claim is refused, in
+the same words as a claim that does not exist.
+
+Those labels are written by the persona that made the claim, which would make
+them worthless as evidence except that its Role grants create and delete and
+neither update nor patch. A persona can label its own claim as it likes and
+cannot relabel anyone else's.
+
+*Trade-off accepted:* the backend is now on the path to the exec tier, which it
+was not before. It still cannot decide who may execute code -- that is RBAC, and
+the claim either exists or was refused -- but it holds the key that opens any
+sandbox, so a compromised backend that could already claim an exec sandbox can
+now also talk to one. A separate issuer would remove that, and is what a
+deployment with more than one tenant should have.
+
+### A template change replaces the warm pool at once
+
+Warm pools use `updateStrategy: Recreate`. Upstream's default, `OnReplenish`,
+leaves sandboxes that are already warm on the old template until each is
+claimed, so a grant removed from a profile stays claimable for as long as the
+pool has stock.
+
+Measured: a change to the pod spec replaced the warm sandbox within eight
+seconds. A change to the template's labels or annotations replaced nothing,
+which upstream documents and is easy to miss -- only the pod spec, the volume
+claims and the Service setting count. Sandboxes already claimed are never
+touched under either strategy, so revoking a grant mid-meeting still means
+ending the meeting.
+
+*Trade-off accepted:* whoever claims during the refill pays a cold start.
 
 ### One image, many profiles
 
@@ -210,6 +300,13 @@ backend's grant with a capability file mounted from a ConfigMap, so what is
 systems.
 
 ## What this model does not claim
+
+- **Admission does not prove isolation.** It checks that the sandbox
+  RuntimeClass was asked for. A handler that silently falls back to `runc`
+  satisfies it completely; only the `/proc/version` gate sees that.
+- **Cluster events are not an audit trail.** The UI shows the controller's
+  Events for a running meeting's sandboxes. Kubernetes keeps them for about an
+  hour, nothing signs them, and they name a sandbox, not the persona in it.
 
 - **It is not a defence against a malicious operator.** Anyone holding the
   operator token can grant a persona any profile. The role split

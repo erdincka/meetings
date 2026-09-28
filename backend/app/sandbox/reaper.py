@@ -13,8 +13,10 @@ Three mechanisms, because any one alone leaks pods:
    labelled itself, so an unlabelled claim is invisible to it and would
    otherwise sit forever.
 
-The SandboxTemplate also carries a shutdown policy, so an orphan eventually
-reaps itself even if the backend never comes back at all.
+Every claim also carries a shutdown time the controller enforces (see
+``SANDBOX_MAX_LIFETIME_SECONDS``), so an orphan is eventually removed even if
+the backend never comes back at all. The sweeps above are what make that
+"promptly" rather than "within hours".
 """
 
 from __future__ import annotations

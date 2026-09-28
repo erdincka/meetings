@@ -97,6 +97,17 @@ sandbox:
   # the control plane. Rendered from APISERVER_CIDRS; see cluster.env.example.
   apiserverCIDRs: []
   execWarmReplicas: 1
+  # How a warm pool reacts when its template changes.
+  #
+  # A template change here is a privilege change -- a different ServiceAccount,
+  # a Secret added or removed, a capability taken away. Upstream's default,
+  # OnReplenish, leaves the sandboxes already warm on the old template until
+  # each is claimed and replaced, so a revoked grant stays claimable for as long
+  # as the pool has stock. Recreate replaces them at once, and costs a cold
+  # start for whoever claims during the refill.
+  warmPoolUpdateStrategy: Recreate
+  # The longest a persona sandbox may live, enforced by the controller.
+  maxLifetimeSeconds: 14400
   execResources:
     requests: {cpu: 100m, memory: 256Mi}
     limits:   {cpu: "2",  memory: 1Gi}
@@ -140,6 +151,14 @@ gateway:
   enabled: true
   className: envoy
   host: meetings.localtest.me
+  # Attach to a Gateway the platform already runs instead of creating one.
+  # With a name set, no Gateway is rendered and `className` and `tls` are
+  # ignored: listeners and certificates belong to whoever owns that Gateway.
+  # It must admit routes from this namespace.
+  existing:
+    name: ""
+    namespace: ""
+    sectionName: ""
 
   # HTTPS, off by default and deliberately so. A trusted certificate needs a
   # domain you own and an ACME account, and making either one a prerequisite
@@ -189,9 +208,46 @@ observability:
   # Where traces go when enabled. Ignored entirely when it is not, so nothing
   # retries against a collector that was never installed.
   otlpEndpoint: "http://tempo.observability.svc:4317"
+  # Scrape the Agent Sandbox controller as well as our own components. It is
+  # installed by the platform rather than by this chart, so this only adds the
+  # scrape config; turn it off where somebody else already scrapes it.
+  scrapeController: true
+  controllerNamespace: agent-sandbox-system
   # Hostname for Grafana on the app's Gateway. Empty adds no listener.
   gatewayHost: ""
   namespace: observability
+
+# The Sandbox Router: the only way into a sandbox.
+#
+# Run per release, in the release namespace, with a verification key of its
+# own -- not the shared instance in agent-sandbox-system that upstream's
+# manifests install. A scoped token is bound to a sandbox but a verification key
+# is not bound to a namespace, so every issuer a shared router trusts can mint a
+# token for every sandbox it can reach. One router per tenant is what makes the
+# key mean "this tenant's sandboxes".
+router:
+  image: registry.k8s.io/agent-sandbox/sandbox-router-go:v1.0.4
+  replicas: 1
+  # Created by scripts/router-keys.sh, never by the chart: the signing key is a
+  # credential, and the chart renders none.
+  signingSecret: meetings-router-signing
+  verificationSecret: meetings-router-verification
+  keyId: meetings
+  tokenTtlSeconds: 60
+  resources:
+    requests: {cpu: 50m,  memory: 64Mi}
+    limits:   {cpu: "1",  memory: 256Mi}
+
+# Admission policy, as a ValidatingAdmissionPolicy -- built into Kubernetes, so
+# this adds no policy engine. It refuses a pod or a SandboxTemplate in the
+# sandbox namespaces that does not name the sandbox RuntimeClass.
+#
+# What it closes is omission: a template that forgets the field runs on the
+# host kernel, in a namespace whose name says otherwise. What it cannot close
+# is a handler that silently falls back to runc; only the /proc/version gate
+# sees that.
+admission:
+  enabled: true
 
 # Static corpus backing search_corpus. Offline so runs stay reproducible.
 corpus:

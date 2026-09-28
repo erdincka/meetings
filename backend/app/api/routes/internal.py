@@ -206,6 +206,100 @@ def _meeting_uuid(identity: SandboxIdentity, claimed: str) -> uuid.UUID:
         raise HTTPException(status_code=400, detail=f"Malformed meeting id: {exc}") from exc
 
 
+# --- exec sandbox tokens ---------------------------------------------------
+#
+# A persona that has claimed a code-execution sandbox reaches it through the
+# Sandbox Router, and the router wants a token naming that sandbox. The persona
+# cannot mint one -- it holds no signing key, and must not -- so it asks here.
+#
+# This does not put the backend in charge of who may execute code. That is
+# still RBAC: the claim either exists or the apiserver refused it. A token is
+# issued only for a claim that already exists and carries the caller's own
+# identity, so what this endpoint decides is narrower -- whether *this* persona
+# may talk to *this* sandbox -- and the answer is no for anyone else's.
+#
+# The claim's labels are written by the persona that created it, which would
+# make them worthless as evidence except that the Role grants create and
+# delete and neither update nor patch: a persona can label its own claim
+# however it likes and cannot relabel another's.
+
+EXEC_PORT = 8080
+EXEC_PATH = "/run"
+
+
+class ExecTokenRequest(BaseModel):
+    claim_name: str = Field(
+        min_length=1, max_length=253, pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    )
+
+
+@router.post("/v1/exec-token", response_model=APIResponse)
+async def exec_token(
+    payload: ExecTokenRequest,
+    identity: SandboxIdentity = Depends(require_sandbox_identity),
+) -> APIResponse:
+    """Issue a router token for an exec sandbox the caller itself claimed."""
+    from app.core.sandbox_auth import AGENT_LABEL, MEETING_LABEL
+    from app.sandbox import kube
+    from app.sandbox.manager import manager
+
+    if identity.namespace != settings.SANDBOX_NAMESPACE or not identity.agent_id:
+        raise HTTPException(status_code=403, detail="Only a bound persona may request this")
+    router_url = settings.SANDBOX_EXEC_ROUTER_URL
+    if not router_url:
+        raise HTTPException(status_code=503, detail="No sandbox router is configured")
+
+    namespace = settings.SANDBOX_EXEC_NAMESPACE
+    try:
+        claim = await kube.get_claim(namespace, payload.claim_name)
+    except Exception as exc:
+        # Not distinguished from "not yours": which claims exist is not
+        # something a caller gets to learn by asking.
+        logger.warning("exec_token_claim_lookup_failed", claim=payload.claim_name, error=str(exc))
+        raise HTTPException(status_code=403, detail="Not a claim this persona holds") from exc
+
+    labels = (claim.get("metadata") or {}).get("labels") or {}
+    if (
+        labels.get(AGENT_LABEL) != identity.agent_id
+        or labels.get(MEETING_LABEL) != identity.meeting_id
+    ):
+        logger.warning(
+            "exec_token_refused",
+            claim=payload.claim_name,
+            caller_agent=identity.agent_id,
+            claim_agent=labels.get(AGENT_LABEL),
+        )
+        raise HTTPException(status_code=403, detail="Not a claim this persona holds")
+
+    sandbox_name = ((claim.get("status") or {}).get("sandbox") or {}).get("name")
+    if not sandbox_name:
+        raise HTTPException(status_code=409, detail="The claim has no sandbox yet")
+    sandbox = await kube.get_sandbox(namespace, sandbox_name)
+    sandbox_uid = (sandbox.get("metadata") or {}).get("uid") or ""
+
+    headers = manager.route_headers(
+        namespace=namespace,
+        sandbox_name=sandbox_name,
+        sandbox_uid=sandbox_uid,
+        method="POST",
+        path=EXEC_PATH,
+        port=EXEC_PORT,
+    )
+    logger.info(
+        "exec_token_issued",
+        agent_id=identity.agent_id,
+        meeting_id=identity.meeting_id,
+        profile=identity.profile,
+        claim=payload.claim_name,
+        sandbox=sandbox_name,
+        sandbox_uid=sandbox_uid,
+    )
+    return APIResponse(
+        status="success",
+        data={"url": f"{router_url.rstrip('/')}{EXEC_PATH}", "headers": headers},
+    )
+
+
 # --- model proxy -----------------------------------------------------------
 #
 # Persona sandboxes reach the model through here rather than calling the

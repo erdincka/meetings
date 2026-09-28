@@ -8,23 +8,58 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "className": { "type": "string" },
-        "host": { "type": "string" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
         "tls": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "enabled": { "type": "boolean" },
-            "secretName": { "type": "string" },
-            "redirect": { "type": "boolean" },
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            },
+            "redirect": {
+              "type": "boolean"
+            },
             "issuerRef": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "name": { "type": "string" },
-                "kind": { "type": "string", "enum": ["ClusterIssuer", "Issuer"] }
+                "name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "ClusterIssuer",
+                    "Issuer"
+                  ]
+                }
               }
+            }
+          }
+        },
+        "existing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "sectionName": {
+              "type": "string"
             }
           }
         }
@@ -34,11 +69,27 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "prometheusRelease": { "type": "string" },
-        "otlpEndpoint": { "type": "string" },
-        "gatewayHost": { "type": "string" },
-        "namespace": { "type": "string" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "prometheusRelease": {
+          "type": "string"
+        },
+        "otlpEndpoint": {
+          "type": "string"
+        },
+        "gatewayHost": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "scrapeController": {
+          "type": "boolean"
+        },
+        "controllerNamespace": {
+          "type": "string"
+        }
       }
     }
   }

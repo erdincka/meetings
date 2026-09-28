@@ -16,7 +16,7 @@ satisfy.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -90,10 +90,18 @@ async def attendees(db_session, unique: str) -> list[RoleAgent]:
     await db_session.commit()
 
 
+class _FakeK8sHelper:
+    """The one read the manager makes after a claim: the Sandbox, for its UID."""
+
+    def get_sandbox(self, name: str, namespace: str) -> dict[str, Any]:
+        return {"metadata": {"name": name, "uid": f"uid-{name}"}}
+
+
 @dataclass
 class _FakeSandboxRecord:
     claim_name: str
     sandbox_id: str
+    k8s_helper: _FakeK8sHelper = field(default_factory=_FakeK8sHelper)
 
 
 class _FakeSDK:
