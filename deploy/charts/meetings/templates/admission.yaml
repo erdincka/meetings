@@ -1,0 +1,76 @@
+{{- if .Values.admission.enabled }}
+{{/*
+Admission: the sandbox namespaces accept only sandboxed workloads.
+
+Every other control in this chart is about what a sandbox may do once it is
+running. This one is about what is allowed to start. The RuntimeClass is a field
+on a pod template, and a template that leaves it out is valid, schedules, goes
+Ready and runs on the host kernel -- inside a namespace everyone believes is
+isolated. Nothing else here would notice.
+
+Two rules, because there are two ways in. SandboxTemplates are checked so the
+mistake is refused where it is made, with a message that names it; Pods are
+checked because a pod does not have to come from a template.
+
+It is a ValidatingAdmissionPolicy, which the apiserver evaluates itself: no
+webhook to be down, no policy engine to install.
+
+What this does not do is prove isolation. It checks that the right RuntimeClass
+was *asked for*. A handler that silently falls back to runc satisfies it
+completely, which is why the /proc/version gate exists and must stay.
+*/}}
+{{- $name := printf "%s-sandbox-runtime" (include "meetings.name" .) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+      - apiGroups: ["extensions.agents.x-k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["sandboxtemplates"]
+      - apiGroups: ["agents.x-k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["sandboxes"]
+  variables:
+    - name: runtimeClass
+      expression: >-
+        object.kind == 'Pod'
+          ? (has(object.spec.runtimeClassName) ? object.spec.runtimeClassName : '')
+          : (has(object.spec.podTemplate.spec.runtimeClassName)
+              ? object.spec.podTemplate.spec.runtimeClassName : '')
+  validations:
+    - expression: "variables.runtimeClass == '{{ .Values.sandbox.runtimeClassName }}'"
+      messageExpression: >-
+        object.kind + ' ' + object.metadata.namespace + '/' +
+        (has(object.metadata.name) ? object.metadata.name : object.metadata.generateName) +
+        ' must set runtimeClassName to {{ .Values.sandbox.runtimeClassName }}, not "' +
+        variables.runtimeClass + '": this namespace runs sandboxed workloads only'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny, Audit]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values:
+            - {{ .Values.sandbox.namespace }}
+            - {{ .Values.sandbox.execNamespace }}
+{{- end }}

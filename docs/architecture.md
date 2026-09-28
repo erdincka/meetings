@@ -51,9 +51,9 @@ extension of the system:
 
 | Namespace | Holds | Notes |
 |---|---|---|
-| `meetings` | Backend, frontend, Gateway, CloudNativePG cluster | Holds the application database credential. Nothing here is gVisor-isolated because nothing here runs untrusted code. |
+| `meetings` | Backend, frontend, two Sandbox Routers, CloudNativePG cluster, and the Gateway unless an existing one is used | Holds the application database credential and the router signing key. Nothing here is gVisor-isolated because nothing here runs untrusted code. |
 | `meetings-sandboxes` | Tier A — one persona pod per attendee, warm-pooled per profile | Each pod's ServiceAccount (`persona-{profile}`) is what RBAC and NetworkPolicy actually key on. |
-| `meetings-exec` | Tier B — the `exec-python` warm pool | Deny-all egress. Only reachable via a SandboxClaim a Tier A pod creates against its own ServiceAccount. |
+| `meetings-exec` | Tier B — the `exec-python` warm pool | Deny-all egress. Reachable only through the exec router, with a token for a SandboxClaim a Tier A pod created against its own ServiceAccount. |
 
 Defined in [`deploy/charts/meetings/templates/namespaces.yaml`](../deploy/charts/meetings/templates/namespaces.yaml).
 
@@ -63,21 +63,25 @@ Defined in [`deploy/charts/meetings/templates/namespaces.yaml`](../deploy/charts
 sequenceDiagram
     participant S as Supervisor (backend)
     participant M as SandboxManager
+    participant R as Sandbox Router
     participant P as Persona pod (Tier A)
     participant K as apiserver (RBAC)
     participant E as Exec pod (Tier B)
 
     S->>M: claim warm persona-{profile} pod
     Note right of M: lazy — on first selection,<br/>not at meeting start
-    M->>P: bind persona (once per meeting)
-    S->>P: issue turn (W3C traceparent propagated)
+    M->>R: bind persona, with a token for this sandbox's UID
+    R->>P: forwarded once the token verifies
+    S->>P: issue turn, the same way (W3C traceparent propagated)
     P->>P: ReAct loop against the model
 
     opt agent calls run_python_analysis
         P->>K: create SandboxClaim, as persona-{profile} SA
         alt profile has can_execute_code
             K-->>P: 200 — claim granted
-            P->>E: POST /run { code } (traceparent propagated again)
+            P->>S: a token for the sandbox I just claimed
+            S-->>P: issued only if the claim carries the caller's identity
+            P->>E: POST /run { code }, via the exec router
             E-->>P: stdout / chart artifact — no egress attempted
         else profile lacks can_execute_code
             K-->>P: 403 Forbidden
@@ -96,14 +100,21 @@ A few details that don't survive being summarized further:
   first selection of that attendee, not at meeting start
   (`backend/app/sandbox/manager.py`).
 - **The Tier B claim is made by the persona pod itself**, using the
-  ServiceAccount token already mounted into it — the backend is not in this
-  path and cannot broker around the RBAC decision on a persona's behalf
-  (`sandbox/runtime/runtime/tools/code_exec.py`).
+  ServiceAccount token already mounted into it — the backend cannot broker
+  around the RBAC decision on a persona's behalf
+  (`sandbox/runtime/runtime/tools/code_exec.py`). What the backend does issue
+  is the router token for a claim that already exists, and only to the persona
+  whose identity is on it (`/internal/v1/exec-token`).
+- **Every hop into a sandbox goes through a router.** The token is minted per
+  request, lasts a minute, and names one sandbox by UID, one method and one
+  path. A name can be inherited by a later sandbox; a UID cannot.
 - **A denial is reported, not raised.** `run_python_analysis` catches the
   403, returns `DENIED_BY_CLUSTER: ...` as a normal tool result, and the
   agent carries on contributing. This is what makes the denial show up in
   the transcript and the audit matrix as a policy decision, rather than
   crashing the turn.
+- **The trace survives every hop, the routers included.** The router's access
+  log carries the same trace ID as the turn it forwarded.
 - **The trace survives all three hops.** The `traceparent` header is
   propagated over the sandbox RPC and again when a persona pod claims an
   exec sandbox, so one turn renders as one trace spanning all three trust
@@ -147,7 +158,7 @@ Every profile shares one runtime image. Nothing about the image decides what
 an agent may do — only the SandboxTemplate, ServiceAccount, NetworkPolicy and
 mounted Secrets its sandbox is created from.
 
-## The five-layer enforcement model
+## The enforcement model
 
 | Layer | Control | Stops | Measured |
 |---|---|---|---|
@@ -156,9 +167,11 @@ mounted Secrets its sandbox is created from.
 | Secret | Credentials mounted only into templates that need them | Nothing to steal | absent for `baseline`/`counsel`, present for `analyst`/`quant`/`chief` |
 | NetworkPolicy | Default-deny egress per profile; no route off-cluster at all | A stolen credential being *used* | blocked for `baseline`/`counsel`, open for `analyst`/`quant`/`chief` |
 | RBAC | Only some ServiceAccounts may claim an exec sandbox | The agent itself — a 403 from the apiserver | **yes** for `quant` only, of six profiles |
+| Router token | Every call into a sandbox carries a token naming it by UID | Reaching a sandbox that is not yours | 401 without a token, 403 with another sandbox's, blocked when bypassing the router |
+| Admission | Sandbox namespaces refuse a workload without the sandbox RuntimeClass | An unsandboxed pod where isolation is assumed | refused in both namespaces |
 
 The table lists each layer in isolation; the diagram below is the argument
-for having five of them. It follows one tool call — `run_python_analysis` —
+for having more than one. It follows one tool call — `run_python_analysis` —
 from two profiles that both attempt it, and shows that `counsel` is caught
 independently at two different layers, not just the first one it meets:
 
@@ -283,7 +296,7 @@ that were otherwise going fine. It now costs one turn.
 
 | Component | Choice | Why |
 |---|---|---|
-| Sandboxes | Agent Sandbox v0.5.6 (`agents.x-k8s.io/v1beta1`) | An emerging Kubernetes-native abstraction for isolated agent workloads |
+| Sandboxes | Agent Sandbox v1.0.4 (`agents.x-k8s.io/v1beta1`) | An emerging Kubernetes-native abstraction for isolated agent workloads |
 | Isolation | gVisor (`runsc`), `systrap` platform | Verified via `/proc/version`, never via a readiness check — see the sandbox security model |
 | Database | CloudNativePG 1.30, Postgres 18 | pgvector arrives as a declarative **ImageVolume** extension, not a custom-baked image |
 | Ingress | Gateway API + Envoy Gateway | A routable address, and the WebSocket upgrade the transcript stream needs |

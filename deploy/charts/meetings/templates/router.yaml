@@ -1,0 +1,243 @@
+{{/*
+The Sandbox Router: the only route into a sandbox.
+
+Upstream's Go router, unmodified, in scoped-token mode. Every request names one
+sandbox by UID and presents a token the backend signed for exactly that sandbox,
+method and path; the router holds the public half of the key and cannot mint.
+Both sandbox tiers admit ingress from these pods and from nothing else, so
+"which pods can reach a sandbox" and "who may talk to this sandbox" are answered
+by two different systems.
+
+It runs here, per release, rather than as the shared instance upstream installs
+into agent-sandbox-system. A verification key is not scoped to a namespace: a
+router trusts every key it is given, for every sandbox it can reach. Shared
+between tenants, that makes each tenant's issuer an issuer for all of them.
+*/}}
+{{- $name := printf "%s-sandbox-router" (include "meetings.name" .) }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+---
+{{/*
+Pod read access, for the cache that maps a Sandbox UID to a live pod address --
+which scoped-token v2 requires. Granted per namespace rather than cluster-wide,
+as upstream's example does; the router is told which namespaces to watch.
+*/}}
+{{- range $ns := list .Values.sandbox.namespace .Values.sandbox.execNamespace }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels: {{- include "meetings.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels: {{- include "meetings.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $.Release.Namespace }}
+---
+{{- end }}
+{{/*
+One Deployment per sandbox namespace, because the router's cache watches either
+one namespace or all of them, and "all of them" needs a cluster-wide grant to
+read every pod in the cluster. Two small routers cost less than that grant.
+*/}}
+{{- range $tier := list (dict "key" "persona" "ns" .Values.sandbox.namespace) (dict "key" "exec" "ns" .Values.sandbox.execNamespace) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}-{{ $tier.key }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "meetings.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: sandbox-router
+    meetings/router-tier: {{ $tier.key }}
+spec:
+  replicas: {{ $.Values.router.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "meetings.name" $ }}
+      app.kubernetes.io/component: sandbox-router
+      meetings/router-tier: {{ $tier.key }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "meetings.name" $ }}
+        app.kubernetes.io/component: sandbox-router
+        meetings/router-tier: {{ $tier.key }}
+    spec:
+      serviceAccountName: {{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sandbox-router
+          image: {{ $.Values.router.image }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            - --http-bind-address=:8080
+            - --metrics-bind-address=:9090
+            - --health-probe-bind-address=:8081
+            - --cluster-domain=cluster.local
+            # A turn is one long streamed response. The default cuts it off.
+            - --proxy-timeout=600s
+            - --authz-mode=scoped-token
+            - --authz-scoped-token-verification-keys-file=/etc/router/keys/keys.json
+            - --cache-enabled=true
+            - --cache-namespace={{ $tier.ns }}
+            - --access-log=true
+            {{- if (include "meetings.otlpEndpoint" $) }}
+            - --enable-tracing
+            {{- end }}
+            # Setting an OTLP endpoint also switches on OTLP metric push, and a
+            # trace backend does not implement that service: the router then
+            # logs a failed upload every minute, forever. Prometheus scrapes
+            # /metrics instead.
+            - --enable-otel-metrics=false
+          {{- with (include "meetings.otlpEndpoint" $) }}
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "meetings-sandbox-router-{{ $tier.key }}"
+          {{- end }}
+          ports:
+            - {name: proxy, containerPort: 8080}
+            - {name: metrics, containerPort: 9090}
+            - {name: healthz, containerPort: 8081}
+          livenessProbe:
+            httpGet: {path: /healthz, port: healthz}
+            periodSeconds: 10
+          readinessProbe:
+            # Not ready until the pod cache has synced: before that every
+            # request is a miss, and a miss under scoped-token is a refusal.
+            httpGet: {path: /readyz, port: healthz}
+            periodSeconds: 5
+          securityContext: {{- include "meetings.containerSecurityContext" $ | nindent 12 }}
+          volumeMounts:
+            - name: keys
+              mountPath: /etc/router/keys
+              readOnly: true
+          resources: {{- toYaml $.Values.router.resources | nindent 12 }}
+      volumes:
+        # Public keys only. The signing key is mounted into the backend and
+        # nowhere else; a compromised router can refuse traffic but not forge it.
+        - name: keys
+          secret:
+            secretName: {{ $.Values.router.verificationSecret }}
+      terminationGracePeriodSeconds: 45
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-{{ $tier.key }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "meetings.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: sandbox-router
+    meetings/router-tier: {{ $tier.key }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "meetings.name" $ }}
+    app.kubernetes.io/component: sandbox-router
+    meetings/router-tier: {{ $tier.key }}
+  ports:
+    - {name: proxy, port: 8080, targetPort: proxy}
+    - {name: metrics, port: 9090, targetPort: metrics}
+---
+{{- end }}
+{{/*
+Who may reach a router, and what a router may reach.
+
+The persona router takes traffic from the backend; the exec router from persona
+sandboxes whose profile may execute code. Neither accepts the other's callers,
+so a persona cannot use the exec router's address to reach another persona, and
+holding a token is not enough without also being somewhere the network allows.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-persona
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: sandbox-router
+      meetings/router-tier: persona
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "meetings.name" . }}
+              app.kubernetes.io/component: backend
+      ports:
+        - {protocol: TCP, port: 8080}
+    {{- include "meetings.routerCommonIngress" . | nindent 4 }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.sandbox.namespace }}
+      ports:
+        - {protocol: TCP, port: 8080}
+    {{- include "meetings.routerCommonEgress" . | nindent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-exec
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "meetings.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: sandbox-router
+      meetings/router-tier: exec
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.sandbox.namespace }}
+          podSelector:
+            matchExpressions:
+              - key: meetings/profile
+                operator: In
+                values:
+                  {{- range $profile := .Values.profiles }}
+                  {{- if $profile.canExecuteCode }}
+                  - {{ $profile.name }}
+                  {{- end }}
+                  {{- end }}
+      ports:
+        - {protocol: TCP, port: 8080}
+    {{- include "meetings.routerCommonIngress" . | nindent 4 }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.sandbox.execNamespace }}
+      ports:
+        - {protocol: TCP, port: 8080}
+    {{- include "meetings.routerCommonEgress" . | nindent 4 }}

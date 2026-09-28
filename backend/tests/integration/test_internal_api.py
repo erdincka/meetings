@@ -78,6 +78,7 @@ class TestSurfaceIsReachable:
             ("POST", "/internal/v1/retrieval/search"),
             ("POST", "/internal/v1/artifacts"),
             ("POST", "/internal/v1/action-items"),
+            ("POST", "/internal/v1/exec-token"),
             ("POST", "/internal/v1/llm/chat/completions"),
         ],
     )
@@ -359,3 +360,109 @@ class TestModelProxy:
         )
         # The real assertion: it parses. A gzip body would raise here.
         assert response.json()["choices"][0]["message"]["content"] == "hello"
+
+
+class TestExecTokens:
+    """A persona gets a router token for the exec sandbox it claimed, and no other.
+
+    RBAC already decided whether the claim could be made. What is tested here is
+    the narrower decision layered on top: that the token names the caller's own
+    sandbox, and that another persona's claim is refused without revealing
+    whether it exists.
+    """
+
+    SANDBOX_UID = "0f7c1c1e-3a55-4c0e-9a57-2f1d6b0f4e11"
+
+    @pytest.fixture
+    def cluster(self, monkeypatch, tmp_path):
+        """One exec claim, held by AGENT_A, and a signing key to mint against."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        from app.core.config import settings
+        from app.sandbox import kube
+        from app.sandbox.manager import manager
+
+        key = Ed25519PrivateKey.generate()
+        pem = tmp_path / "signing-key.pem"
+        pem.write_bytes(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        monkeypatch.setattr(settings, "SANDBOX_ROUTER_SIGNING_KEY_FILE", str(pem))
+        monkeypatch.setattr(settings, "SANDBOX_EXEC_ROUTER_URL", "http://exec-router:8080")
+        monkeypatch.setattr(manager, "_minter", None)
+
+        claims = {
+            "exec-abc": {
+                "metadata": {"labels": {AGENT_LABEL: AGENT_A, MEETING_LABEL: MEETING}},
+                "status": {"sandbox": {"name": "exec-python-x1"}},
+            }
+        }
+
+        async def get_claim(namespace: str, name: str) -> dict:
+            assert namespace == settings.SANDBOX_EXEC_NAMESPACE
+            return claims[name]
+
+        async def get_sandbox(namespace: str, name: str) -> dict:
+            return {"metadata": {"name": name, "uid": self.SANDBOX_UID}}
+
+        monkeypatch.setattr(kube, "get_claim", get_claim)
+        monkeypatch.setattr(kube, "get_sandbox", get_sandbox)
+        return key
+
+    async def test_the_claimant_gets_a_token_bound_to_its_sandbox(
+        self, client: httpx.AsyncClient, as_sandbox, cluster
+    ) -> None:
+        import base64
+        import json
+
+        as_sandbox(AGENT_A, "quant")
+        response = await client.post(
+            "/internal/v1/exec-token",
+            json={"claim_name": "exec-abc"},
+            headers={"Authorization": "Bearer sa-token"},
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["url"] == "http://exec-router:8080/run"
+        assert data["headers"]["X-Sandbox-UID"] == self.SANDBOX_UID
+
+        token = data["headers"]["Authorization"].removeprefix("Bearer ")
+        _, kid, payload, signature = token.split(".")
+        pad = lambda v: v + "=" * (-len(v) % 4)  # noqa: E731
+        cluster.public_key().verify(
+            base64.urlsafe_b64decode(pad(signature)),
+            f"agent-sandbox/scoped-token/v2.{kid}.{payload}".encode(),
+        )
+        claims = json.loads(base64.urlsafe_b64decode(pad(payload)))
+        assert claims["ns"] == "meetings-exec"
+        assert claims["name"] == "exec-python-x1"
+        assert claims["uid"] == self.SANDBOX_UID
+        assert (claims["method"], claims["path"], claims["port"]) == ("POST", "/run", 8080)
+
+    async def test_another_personas_claim_is_refused(
+        self, client: httpx.AsyncClient, as_sandbox, cluster
+    ) -> None:
+        as_sandbox(AGENT_B, "quant")
+        response = await client.post(
+            "/internal/v1/exec-token",
+            json={"claim_name": "exec-abc"},
+            headers={"Authorization": "Bearer sa-token"},
+        )
+        assert response.status_code == 403
+
+    async def test_a_missing_claim_reads_the_same_as_a_foreign_one(
+        self, client: httpx.AsyncClient, as_sandbox, cluster
+    ) -> None:
+        as_sandbox(AGENT_A, "quant")
+        response = await client.post(
+            "/internal/v1/exec-token",
+            json={"claim_name": "no-such-claim"},
+            headers={"Authorization": "Bearer sa-token"},
+        )
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Not a claim this persona holds"

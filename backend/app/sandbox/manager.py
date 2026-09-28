@@ -23,6 +23,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.sandbox_auth import AGENT_LABEL, MEETING_LABEL, PROFILE_LABEL
+from app.sandbox.scoped_token import ScopedTokenMinter, Target
 
 logger = structlog.get_logger(__name__)
 
@@ -38,6 +39,9 @@ class SandboxHandle:
     sandbox_name: str
     namespace: str
     base_url: str
+    # The Sandbox object's UID. A name can be inherited by a later sandbox; a
+    # UID cannot, which is why router tokens are bound to this and not the name.
+    sandbox_uid: str = ""
 
 
 @dataclass
@@ -71,6 +75,7 @@ class SandboxManager:
     def __init__(self, namespace: str | None = None) -> None:
         self.namespace = namespace or settings.SANDBOX_NAMESPACE
         self._client: object | None = None
+        self._minter: ScopedTokenMinter | None = None
         self._lock = asyncio.Lock()
         # (meeting_id, agent_id) -> the sandbox that persona is speaking from.
         self._leases: dict[tuple[str, str], _Lease] = {}
@@ -80,9 +85,10 @@ class SandboxManager:
             from k8s_agent_sandbox import SandboxClient
             from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
 
-            # In-cluster: the backend talks to sandboxes over cluster DNS. The
-            # Sandbox Router exists for callers outside the cluster, where
-            # port-forward is unusable because it is incompatible with gVisor.
+            # The SDK is used for the control plane only -- claiming and
+            # releasing. Traffic to a sandbox goes through the Sandbox Router
+            # with a scoped token, which the SDK has no way to present; see
+            # route_headers.
             self._client = SandboxClient(
                 connection_config=SandboxInClusterConnectionConfig(),
             )
@@ -123,7 +129,7 @@ class SandboxManager:
             PROFILE_LABEL: profile,
         }
 
-        def _create() -> tuple[str, str]:
+        def _create() -> tuple[str, str, str]:
             client = self._sdk_client()
             sandbox = client.create_sandbox(  # type: ignore[attr-defined]
                 warmpool=warm_pool,
@@ -131,12 +137,18 @@ class SandboxManager:
                 sandbox_ready_timeout=ready_timeout,
                 pod_labels=pod_labels,
                 labels=pod_labels,
+                # A ceiling the controller enforces. Release at the end of a
+                # meeting is still the normal path; this is what happens when
+                # the process that would have released it is gone.
+                shutdown_after_seconds=settings.SANDBOX_MAX_LIFETIME_SECONDS,
             )
-            return sandbox.claim_name, sandbox.sandbox_id
+            obj = sandbox.k8s_helper.get_sandbox(sandbox.sandbox_id, self.namespace) or {}
+            uid = (obj.get("metadata") or {}).get("uid") or ""
+            return sandbox.claim_name, sandbox.sandbox_id, uid
 
         async with self._lock:
             try:
-                claim_name, sandbox_name = await asyncio.to_thread(_create)
+                claim_name, sandbox_name, sandbox_uid = await asyncio.to_thread(_create)
             except Exception as exc:
                 logger.error(
                     "sandbox_claim_failed",
@@ -152,6 +164,7 @@ class SandboxManager:
             sandbox_name=sandbox_name,
             namespace=self.namespace,
             base_url=self.base_url_for(sandbox_name),
+            sandbox_uid=sandbox_uid,
         )
         self._leases[key] = _Lease(handle=handle, profile=profile)
         logger.info(
@@ -159,6 +172,8 @@ class SandboxManager:
             meeting_id=meeting_id,
             agent_id=agent_id,
             sandbox=sandbox_name,
+            sandbox_uid=sandbox_uid,
+            claim=claim_name,
             profile=profile,
             url=handle.base_url,
         )
@@ -202,6 +217,21 @@ class SandboxManager:
             if mid == meeting_id
         ]
 
+    def leases_for(self, meeting_id: str) -> list[dict[str, str]]:
+        """Which persona holds which sandbox, for joining cluster events to."""
+        return [
+            {
+                "agent_id": agent,
+                "profile": lease.profile,
+                "sandbox": lease.handle.sandbox_name,
+                "sandbox_uid": lease.handle.sandbox_uid,
+                "claim": lease.handle.claim_name,
+                "namespace": lease.handle.namespace,
+            }
+            for (mid, agent), lease in self._leases.items()
+            if mid == meeting_id
+        ]
+
     async def release_meeting(self, meeting_id: str) -> None:
         """Hand back every sandbox held for one meeting."""
         keys = [key for key in self._leases if key[0] == meeting_id]
@@ -210,14 +240,71 @@ class SandboxManager:
             await self.release_all(handles)
 
     def base_url_for(self, sandbox_name: str) -> str:
-        """Cluster DNS address of a sandbox's Service.
+        """Where requests for a sandbox are sent.
 
-        The controller publishes one per sandbox when the SandboxTemplate sets
-        `service: true`, and reports it as status.serviceFQDN. It is constructed
-        here rather than read back to avoid an extra API round trip on the hot
-        path; the shape is verified by the smoke-sandbox gate.
+        The Sandbox Router when one is configured, which in a cluster is always:
+        the sandbox NetworkPolicy admits nothing else. The sandbox's own Service
+        otherwise, for a runtime running outside a cluster.
         """
+        if settings.SANDBOX_ROUTER_URL:
+            return settings.SANDBOX_ROUTER_URL.rstrip("/")
         return f"http://{sandbox_name}.{self.namespace}.svc.cluster.local:{RUNTIME_PORT}"
+
+    def minter(self) -> ScopedTokenMinter:
+        if self._minter is None:
+            self._minter = ScopedTokenMinter.from_pem_file(
+                settings.SANDBOX_ROUTER_SIGNING_KEY_FILE, settings.SANDBOX_ROUTER_KEY_ID
+            )
+        return self._minter
+
+    def route_headers(
+        self,
+        *,
+        namespace: str,
+        sandbox_name: str,
+        sandbox_uid: str,
+        method: str,
+        path: str,
+        port: int = RUNTIME_PORT,
+    ) -> dict[str, str]:
+        """Routing headers and a token for one request to one sandbox.
+
+        Minted per request rather than per lease. A token is reusable until it
+        expires, so its lifetime is the window in which a leaked one is useful;
+        a minute is enough to open a connection and not much else.
+
+        Empty when no router is configured, so a directly addressed runtime
+        sees an ordinary request.
+        """
+        if not (settings.SANDBOX_ROUTER_URL or settings.SANDBOX_EXEC_ROUTER_URL):
+            return {}
+        token = self.minter().mint(
+            Target(
+                namespace=namespace,
+                sandbox_name=sandbox_name,
+                sandbox_uid=sandbox_uid,
+                port=port,
+                method=method,
+                path=path,
+            ),
+            settings.SANDBOX_ROUTER_GRANT_SECONDS,
+        )
+        return {
+            "X-Sandbox-ID": sandbox_name,
+            "X-Sandbox-UID": sandbox_uid,
+            "X-Sandbox-Namespace": namespace,
+            "X-Sandbox-Port": str(port),
+            "Authorization": f"Bearer {token}",
+        }
+
+    def headers_for(self, handle: SandboxHandle, method: str, path: str) -> dict[str, str]:
+        return self.route_headers(
+            namespace=handle.namespace,
+            sandbox_name=handle.sandbox_name,
+            sandbox_uid=handle.sandbox_uid,
+            method=method,
+            path=path,
+        )
 
     async def release(self, handle: SandboxHandle) -> None:
         """Terminate a claimed sandbox. Never raises: cleanup must not fail a meeting."""

@@ -72,24 +72,18 @@ metadata:
 spec:
   service: false
   {{/*
-  No egress rules at all, and no ingress beyond the controller. Model-authored
+  No egress rules at all, and no ingress beyond the exec router. Model-authored
   code runs here; it must not be able to reach the database, the backend, the
   inference endpoint, the apiserver or the internet, whatever it decides to try.
   */}}
   networkPolicy:
+    # A persona has to be able to deliver the job and collect the output, and
+    # does so through the exec router. Admitting the router rather than the
+    # persona namespace means a persona that may execute code can reach the
+    # sandbox it claimed and not the one its colleague did.
     ingress:
       - from:
-          - namespaceSelector:
-              matchLabels:
-                kubernetes.io/metadata.name: agent-sandbox-system
-      # A persona sandbox has to be able to deliver the job and collect the
-      # output, which the SDK does over HTTP to the sandbox itself. Denying this
-      # blocks the caller, not the code: the security property that matters is
-      # that the *executed code* reaches nothing, and that is egress, below.
-      - from:
-          - namespaceSelector:
-              matchLabels:
-                kubernetes.io/metadata.name: {{ .Values.sandbox.namespace }}
+          {{- include "meetings.routerPeer" (dict "root" . "tier" "exec") | nindent 10 }}
         ports:
           - {protocol: TCP, port: 8080}
     # Deliberately empty. Model-authored code reaches nothing: not the database,
@@ -152,5 +146,7 @@ metadata:
   labels: {{- include "meetings.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.sandbox.execWarmReplicas }}
+  updateStrategy:
+    type: {{ .Values.sandbox.warmPoolUpdateStrategy }}
   sandboxTemplateRef:
     name: exec-python

@@ -22,6 +22,7 @@ import {
   FilePlus
 } from "lucide-react"
 import AddDocDialog from "@/components/shared/AddDocDialog"
+import ClusterEvents from "@/components/meeting/ClusterEvents"
 import SandboxStatus from "@/components/meeting/SandboxStatus"
 import ToolAuditMatrix from "@/components/meeting/ToolAuditMatrix"
 import ArtifactPanel from "@/components/meeting/ArtifactPanel"
@@ -313,6 +314,12 @@ export default function LiveMeetingPage({ params }: { params: Promise<{ id: stri
                         <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Isolated runtimes</h4>
                         <div className="mt-1.5">
                           <SandboxStatus eventLog={store.eventLog} attendees={roleMap} />
+                        </div>
+                      </div>
+                      <div>
+                        <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Cluster events</h4>
+                        <div className="mt-1.5">
+                          <ClusterEvents meetingId={meetingId} attendees={roleMap} live={store.status === 'running'} />
                         </div>
                       </div>
                       <div>

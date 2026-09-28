@@ -38,6 +38,12 @@ gateway:
   # are served by one Gateway on one address, so two separately-configured
   # hostnames could only ever disagree with each other.
   host: meetings.${APP_DOMAIN}
+  className: ${GATEWAY_CLASS:-envoy}
+  # Empty creates a Gateway for this release. On a cluster with a shared one,
+  # name it and the chart only attaches a route.
+  existing:
+    name: "${GATEWAY_NAME:-}"
+    namespace: "${GATEWAY_NAMESPACE:-}"
   # Every setting here has a default, so a cluster.env written before HTTPS
   # existed still renders. Off means plain HTTP, which needs no domain and no
   # certificate authority -- see the HTTPS section of cluster.env.example.

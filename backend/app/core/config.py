@@ -120,6 +120,30 @@ class Settings(BaseSettings):
     # enough that an orphan doesn't sit for days before the next restart.
     SANDBOX_UNLABELED_CLAIM_MAX_AGE_MINUTES: int = 30
 
+    # The Sandbox Router. Every call into a sandbox goes through it, carrying a
+    # token that names one sandbox by UID, so reaching a sandbox is an
+    # authorisation decision and not merely a matter of knowing its address.
+    #
+    # Empty means sandboxes are addressed directly, which is what a runtime
+    # started outside a cluster needs. In a cluster the chart always sets this,
+    # and the sandbox NetworkPolicy admits the router and nothing else -- so
+    # leaving it unset there fails closed, as a refused connection.
+    SANDBOX_ROUTER_URL: str | None = None
+    # A second router in front of the exec tier. The backend never calls it;
+    # it tells a persona where it is when issuing that persona a token.
+    SANDBOX_EXEC_ROUTER_URL: str | None = None
+    SANDBOX_ROUTER_SIGNING_KEY_FILE: str = "/etc/meetings/router/signing-key.pem"
+    SANDBOX_ROUTER_KEY_ID: str = "meetings"
+    # Checked when a request starts, not while it streams, so this needs to
+    # cover a connection attempt rather than a whole turn.
+    # How long a router token lasts. Not named *_TOKEN_*: scanners read that
+    # as a credential in a ConfigMap, and this is a duration.
+    SANDBOX_ROUTER_GRANT_SECONDS: int = 60
+    # The longest a persona sandbox may exist, enforced by the controller rather
+    # than by this process: a backend that dies and never returns must not
+    # leave sandboxes running until somebody notices.
+    SANDBOX_MAX_LIFETIME_SECONDS: int = 4 * 60 * 60
+
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, v: object) -> object:

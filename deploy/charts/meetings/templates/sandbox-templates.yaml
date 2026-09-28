@@ -48,29 +48,25 @@ spec:
 
   {{/*
   Declared explicitly rather than left to the controller. With no policy given
-  the controller synthesises one that allows ingress only from the Sandbox
-  Router; this design calls persona runtimes directly over cluster DNS.
+  the controller synthesises one that admits the shared router in
+  agent-sandbox-system and allows egress to the whole public internet. Neither
+  half is wanted here: the router is this release's own, and nothing in a
+  sandbox needs a route off the cluster.
 
   This is enforcement layer 4, and the per-profile differences below are what
   make a stolen credential useless to the wrong profile.
   */}}
   networkPolicy:
+    # From the persona router, and from nowhere else -- not the backend, and
+    # not the controller's namespace, which used to be admitted whole. A
+    # caller reaches this sandbox by presenting the router a token that names
+    # it; being in the right namespace is no longer sufficient.
     ingress:
       - from:
-          - namespaceSelector:
-              matchLabels:
-                kubernetes.io/metadata.name: {{ $root.Release.Namespace }}
-            podSelector:
-              matchLabels:
-                app.kubernetes.io/name: {{ include "meetings.name" $root }}
-                app.kubernetes.io/component: backend
+          {{- include "meetings.routerPeer" (dict "root" $root "tier" "persona") | nindent 10 }}
         ports:
           - protocol: TCP
             port: 8080
-      - from:
-          - namespaceSelector:
-              matchLabels:
-                kubernetes.io/metadata.name: agent-sandbox-system
     egress:
       - to:
           - namespaceSelector:
@@ -119,13 +115,12 @@ spec:
           - {protocol: TCP, port: 8080}
       {{- end }}
       {{- if $profile.canExecuteCode }}
-      # Delivering a job to a claimed exec sandbox and collecting its output.
-      # Only profiles that may execute code need this route; RBAC already
-      # decides whether they can obtain a sandbox to talk to at all.
+      # Delivering a job to a claimed exec sandbox and collecting its output,
+      # by way of the exec router. There is no route to the exec namespace
+      # itself: RBAC decides whether this profile can obtain a sandbox, and the
+      # router decides whether a given request may reach a given one.
       - to:
-          - namespaceSelector:
-              matchLabels:
-                kubernetes.io/metadata.name: {{ $root.Values.sandbox.execNamespace }}
+          {{- include "meetings.routerPeer" (dict "root" $root "tier" "exec") | nindent 10 }}
         ports:
           - {protocol: TCP, port: 8080}
       {{- end }}
@@ -256,6 +251,10 @@ spec:
               value: "http://{{ include "meetings.name" $root }}-corpus.{{ $root.Release.Namespace }}.svc:8080"
             - name: SANDBOX_EXEC_NAMESPACE
               value: {{ $root.Values.sandbox.execNamespace }}
+            {{- if $profile.canExecuteCode }}
+            - name: SANDBOX_ROUTER_URL
+              value: {{ include "meetings.routerUrl" (dict "root" $root "tier" "exec") | quote }}
+            {{- end }}
             - name: MEETINGS_PROFILE
               value: {{ $profile.name }}
           volumeMounts:
@@ -322,6 +321,9 @@ metadata:
 spec:
   # Pre-warmed so no turn pays a cold gVisor pod start.
   replicas: {{ $profile.warmReplicas }}
+  # A template change is a privilege change; see values.yaml.
+  updateStrategy:
+    type: {{ $root.Values.sandbox.warmPoolUpdateStrategy }}
   sandboxTemplateRef:
     name: {{ $sa }}
 {{- end }}

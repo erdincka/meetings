@@ -9,6 +9,36 @@ command provokes the behaviour and observes what actually happens, because the
 interesting failures are precisely the ones where the configuration reads
 correctly and does nothing.
 
+## Layers 6 and 7 — the router and admission
+
+```bash
+make smoke-router
+```
+
+Needs the app deployed. It sends seven requests from the backend pod and
+reports what came back for each -- bypassing the router, no token, a valid
+token, a token minted for a different sandbox, a token for a different path, a
+tampered signature, and a call to the exec router the backend should not be
+able to reach -- then offers each sandbox namespace a pod with no RuntimeClass.
+
+```
+  ok   direct, bypassing the router         blocked
+  ok   router, no token                     401
+  ok   router, valid token                  422
+  ok   router, token for another sandbox    403
+  ok   router, token for another path       403
+  ok   router, tampered signature           401
+  ok   exec router, from the backend        blocked
+  ok   admission refuses an unsandboxed pod in meetings-sandboxes
+  ok   admission refuses an unsandboxed pod in meetings-exec
+```
+
+The `422` is the success case: the sandbox received the request and rejected
+its empty body, which proves it arrived without binding a persona into a warm
+pod. The probe does not use `/healthz`, because the router answers that path
+itself without consulting the authorizer -- every case returns 200, and a gate
+built on it passes whatever the router is doing.
+
 ## Layer 5 — RBAC: who may execute code
 
 ```bash
@@ -93,6 +123,8 @@ make smoke
   of application code is involved
 - **gate 3** asserts a deny-all NetworkPolicy actually blocks traffic, because
   every CNI accepts policy objects and not every CNI enforces them
+- **gate 4** (`make smoke-router`, above) is separate because it needs the app
+  deployed, where the first three run before any of it exists
 
 ## Before any of this
 

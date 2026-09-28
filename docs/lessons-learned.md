@@ -14,7 +14,7 @@ putting untrusted agent execution on Kubernetes.
 
 ## The controls that looked right and did nothing
 
-This is the theme the project kept rediscovering, at four different layers. It
+This is the theme the project kept rediscovering, at five different layers. It
 is the single most transferable lesson here, so it goes first.
 
 **A misconfigured RuntimeClass handler does not fail loudly.** On several
@@ -45,7 +45,15 @@ first integration test that asserted against the assembled application rather
 than against the handlers, and the test that catches it now asserts a `401`,
 because a `401` proves the route exists while a `404` proves nothing.
 
-The habit that comes out of all four: **provoke the behaviour, observe what
+**A probe can ask the wrong component.** The first gate written for the Sandbox
+Router sent each test request to `/healthz`. Every case came back 200 -- no
+token, a tampered signature, a token for a different sandbox. The router was
+not broken: it answers `/healthz` itself, on the same port it proxies on,
+without consulting the authorizer, so none of those requests was ever
+authorised or refused. The gate was measuring the router's liveness and
+reporting it as the router's policy.
+
+The habit that comes out of all five: **provoke the behaviour, observe what
 happens**. Not "is the object present", not "is the pod ready" — run the code
 and look. Every gate in this repository is written that way, and the
 `/proc/version` assertion in particular must never be weakened to a readiness
@@ -218,6 +226,25 @@ template declares no `networkPolicy` the controller synthesises one allowing
 ingress only from the Sandbox Router. Direct calls are denied under that
 default. The project now declares its policy explicitly and opens exactly the
 two routes it needs.
+
+**The managed NetworkPolicy default was called a good one.** Half of it is. It
+admits ingress only from the Sandbox Router, and it allows egress to the entire
+public internet. The earlier text described the first half and endorsed the
+whole.
+
+**The router was described as a hop this design did not need.** That was true
+of routing and wrong about authorisation. NetworkPolicy decided which pods
+could reach a sandbox and nothing decided which sandbox a permitted caller
+could reach, so a persona that may execute code had a route to every exec
+sandbox, including its colleague's. Every call now goes through the router with
+a token for one sandbox.
+
+**A warm pool was assumed to follow its template.** It does not, by default:
+sandboxes already warm keep the template they were created from until claimed.
+Where a template change removes a grant, that is a revoked privilege still on
+offer. Setting `Recreate` fixes it for the pod spec and not for the template's
+labels or annotations -- the first test of it changed an annotation, waited a
+minute, and concluded, briefly and wrongly, that `Recreate` did nothing.
 
 ---
 

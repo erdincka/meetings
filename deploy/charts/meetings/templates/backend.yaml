@@ -78,6 +78,10 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            # The key that signs router tokens. Here and nowhere else.
+            - name: router-signing
+              mountPath: /etc/meetings/router
+              readOnly: true
           # Three distinct probes. /health is liveness only and does no I/O;
           # /readyz checks the database, so a backend that loses Postgres
           # leaves the rotation instead of being killed and restarted.
@@ -97,6 +101,12 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        # Not optional: a backend that cannot sign cannot reach a sandbox, and
+        # should fail to start rather than fail every turn.
+        - name: router-signing
+          secret:
+            secretName: {{ .Values.router.signingSecret }}
+            defaultMode: 0440
 ---
 apiVersion: v1
 kind: Service

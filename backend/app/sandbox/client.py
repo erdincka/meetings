@@ -1,4 +1,7 @@
-"""Talking to a persona sandbox over its Service.
+"""Talking to a persona sandbox, through the Sandbox Router.
+
+Each request carries a token scoped to one sandbox, one method and one path, so
+the headers are computed per request rather than fixed on the client.
 
 One HTTP call per turn, consuming an SSE stream that ends in a single
 `turn.result`. Interim events are forwarded to the browser so the transcript
@@ -8,7 +11,7 @@ fills in as the model speaks rather than appearing all at once.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 import structlog
@@ -33,10 +36,19 @@ class SandboxRPCError(RuntimeError):
     pass
 
 
+HeaderFactory = Callable[[str, str], dict[str, str]]
+
+
 class PersonaSandboxClient:
-    def __init__(self, base_url: str, http: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        http: httpx.AsyncClient | None = None,
+        headers_for: HeaderFactory | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self._http = http
+        self._headers_for = headers_for
         self._owns_http = http is None
 
     async def __aenter__(self) -> PersonaSandboxClient:
@@ -54,10 +66,14 @@ class PersonaSandboxClient:
             raise SandboxRPCError("Client used outside an async context")
         return self._http
 
+    def _headers(self, method: str, path: str) -> dict[str, str]:
+        return self._headers_for(method, path) if self._headers_for else {}
+
     async def bind(self, request: PersonaBindRequest) -> PersonaBindResponse:
         response = await self.http.post(
             f"{self.base_url}/v1/persona",
             json=request.model_dump(mode="json"),
+            headers=self._headers("POST", "/v1/persona"),
             timeout=BIND_TIMEOUT,
         )
         response.raise_for_status()
@@ -79,6 +95,7 @@ class PersonaSandboxClient:
             "POST",
             f"{self.base_url}/v1/turn",
             json=request.model_dump(mode="json"),
+            headers=self._headers("POST", "/v1/turn"),
             timeout=TURN_TIMEOUT,
         ) as response:
             response.raise_for_status()

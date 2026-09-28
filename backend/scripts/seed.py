@@ -296,6 +296,59 @@ PERSONA_DEPTH = {
 }
 
 
+async def _seed_document(session: Any, d: dict[str, Any]) -> str | None:
+    """Seed one document with its chunk, or repair one left without a chunk.
+
+    Returns the document id, or None if it could not be made searchable.
+    """
+    doc = (
+        await session.execute(select(Document).where(Document.document_name == d["name"]))
+    ).scalar()
+    if doc is not None:
+        chunks = (
+            await session.execute(
+                select(func.count())
+                .select_from(DocumentChunk)
+                .where(DocumentChunk.document_id == doc.id)
+            )
+        ).scalar()
+        if chunks:
+            return str(doc.id)
+    try:
+        # Embed before writing anything, so a failure leaves no half-seeded
+        # document behind to be mistaken for a whole one.
+        embeddings = await generate_embeddings([d["text"]], session)
+        if doc is None:
+            doc = Document(
+                document_name=d["name"],
+                library_scope=d["scope"],
+                owner_agent_id=d["owner"],
+                file_type="text/plain",
+                metadata_json={"type": "seed"},
+            )
+            session.add(doc)
+            await session.flush()
+        session.add(
+            DocumentChunk(
+                document_id=doc.id,
+                chunk_index=0,
+                page_number="1",
+                text=d["text"],
+                normalized_text=d["text"].lower(),
+                embedding=embeddings[0],
+            )
+        )
+        return str(doc.id)
+    except Exception as e:
+        # Loudly: the document is not searchable, and the next run will retry.
+        logger.warning(
+            "seed_progress",
+            detail=f"Document '{d['name']}' was NOT seeded; re-run once the "
+            f"embedding endpoint answers: {e}",
+        )
+        return None
+
+
 async def seed_data() -> None:
     # Behavioral trait pools
     tones_pool = [
@@ -437,10 +490,23 @@ async def seed_data() -> None:
             gc_stmt = select(RoleAgent.id).where(RoleAgent.title == "GC")
             gc_agent_id = (await session.execute(gc_stmt)).scalar()
 
-        # 3. Sample Documents (skip if any documents exist)
-        stmt = select(func.count()).select_from(Document)
-        res = await session.execute(stmt)
-        if res.scalar() == 0:
+        # 3. Sample documents.
+        #
+        # Decided per document, on whether it has a searchable chunk -- not on
+        # whether any document exists. The embedding call is the step that
+        # fails, and it fails after the Document row is written: seeding
+        # against an unreachable embedding endpoint used to leave two documents
+        # with no chunks, and every later run then skipped them as "already
+        # exist". Retrieval answered 200 with nothing in it, indefinitely.
+        seeded_docs = (
+            await session.execute(
+                select(func.count())
+                .select_from(Document)
+                .where(Document.metadata_json["type"].as_string() == "seed")
+            )
+        ).scalar()
+        other_docs = (await session.execute(select(func.count()).select_from(Document))).scalar()
+        if seeded_docs or not other_docs:
             docs_to_create: list[dict[str, Any]] = [
                 {
                     "name": "Quality Incident Report #842",
@@ -468,34 +534,9 @@ async def seed_data() -> None:
 
             default_doc_ids: list[str] = []
             for d in docs_to_create:
-                try:
-                    doc = Document(
-                        document_name=d["name"],
-                        library_scope=d["scope"],
-                        owner_agent_id=d["owner"],
-                        file_type="text/plain",
-                        metadata_json={"type": "seed"},
-                    )
-                    session.add(doc)
-                    await session.flush()
-
-                    embeddings = await generate_embeddings([d["text"]], session)
-                    chunk = DocumentChunk(
-                        document_id=doc.id,
-                        chunk_index=0,
-                        page_number="1",
-                        text=d["text"],
-                        normalized_text=d["text"].lower(),
-                        embedding=embeddings[0],
-                    )
-                    session.add(chunk)
-                    default_doc_ids.append(str(doc.id))
-                except Exception as e:
-                    logger.info(
-                        "seed_progress", detail=f"Failed to seed document '{d['name']}': {str(e)}"
-                    )
-                    # Continue with other documents if possible
-                    continue
+                doc_id = await _seed_document(session, d)
+                if doc_id:
+                    default_doc_ids.append(doc_id)
             logger.info("seed_progress", detail="Sample documents seeding process complete.")
         else:
             logger.info("seed_progress", detail="Documents already exist, skipping.")

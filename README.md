@@ -42,7 +42,7 @@ That much is an LLM demo. The interesting part is underneath.
 Each attendee's reasoning loop executes in a **separate sandbox pod** under a
 gVisor kernel. Agents that need to analyse data write Python, and that code runs
 in a **second sandbox tier with no network access at all**. Which tools a given
-persona can reach is decided by the cluster, at five layers:
+persona can reach is decided by the cluster, at seven layers:
 
 | Layer | Control | What it stops |
 |---|---|---|
@@ -51,6 +51,8 @@ persona can reach is decided by the cluster, at five layers:
 | Secret | Credentials mounted only into templates that need them | Nothing to steal |
 | NetworkPolicy | Default-deny egress per profile | A stolen credential being *used* |
 | RBAC | Only some ServiceAccounts may claim an exec sandbox | The agent itself — with a 403 from the apiserver |
+| Router token | Every call into a sandbox carries a token naming that sandbox by UID | A caller that can reach a sandbox talking to one that is not its own |
+| Admission | The sandbox namespaces refuse a workload that does not name the sandbox RuntimeClass | An unsandboxed pod running where everyone assumes isolation |
 
 The demonstrable moment: a General Counsel persona asked to run code gets a
 **403 from the Kubernetes API server**, surfaced in the UI's audit matrix. Least
@@ -72,7 +74,9 @@ changing a profile.
 flowchart TB
     browser["Browser"]
     gw["Gateway API · Envoy<br/><i>HTTP + WebSocket</i>"]
-    be["FastAPI backend<br/><b>LangGraph supervisor + router</b><br/><i>graph state never leaves here</i>"]
+    be["FastAPI backend<br/><b>LangGraph supervisor</b><br/><i>graph state never leaves here</i>"]
+    ra["Sandbox Router · persona<br/><i>scoped token, bound to one sandbox</i>"]
+    rb["Sandbox Router · exec<br/><i>scoped token, bound to one sandbox</i>"]
     db[("CloudNativePG<br/>Postgres 18 + pgvector<br/><i>retrieval · artifacts · state</i>")]
 
     subgraph tierA ["Tier A — persona sandboxes (gVisor)"]
@@ -84,15 +88,15 @@ flowchart TB
     end
 
     browser -->|HTTP / WS| gw --> be
-    be -->|dispatch a turn| pa
-    pa -->|"claim (RBAC-gated)"| pb
+    be -->|dispatch a turn| ra --> pa
+    pa -->|"claim (RBAC-gated)"| rb --> pb
     be <--> db
     pa -.->|"scoped internal API<br/>+ /internal/v1/llm proxy"| be
 
     classDef tier fill:#eef2ff,stroke:#4f46e5,stroke-width:2px,color:#1e1b4b;
     classDef core fill:#f8fafc,stroke:#475569,stroke-width:2px,color:#0f172a;
     class pa,pb tier;
-    class browser,gw,be,db core;
+    class browser,gw,be,db,ra,rb core;
     style tierA fill:#ffffff,stroke:#c7d2fe,stroke-width:1px,color:#3730a3;
     style tierB fill:#ffffff,stroke:#c7d2fe,stroke-width:1px,color:#3730a3;
 ```
@@ -102,7 +106,10 @@ Two design rules make this coherent:
 1. **The LangGraph graph never leaves the backend.** Sandboxes are turn
    executors, not graph participants. Distributed checkpointing across sandboxes
    is a research project, not a demo.
-2. **Sandboxes never hold the application database credential.** Everything they
+2. **Nothing reaches a sandbox except through a router, holding a token for
+   that sandbox.** Upstream's Sandbox Router sits in front of each tier. Being
+   on the right network is necessary and no longer sufficient.
+3. **Sandboxes never hold the application database credential.** Everything they
    need goes through a scoped internal API; the one exception is a read-only DSN
    for a separate metrics schema, mounted only where it is granted.
 
@@ -147,10 +154,10 @@ listener on together; `make observability` installs the stack they point at.
 |---|---|
 | Kubernetes 1.34+ | `ImageVolume` for pgvector, and the floor CloudNativePG 1.30 supports |
 | A RuntimeClass with kernel-level isolation | The boundary the whole design rests on |
-| Agent Sandbox v0.5.6+ | `Sandbox`, `SandboxClaim`, `SandboxTemplate`, `SandboxWarmPool` |
+| Agent Sandbox v1.0.4+ | `Sandbox`, `SandboxClaim`, `SandboxTemplate`, `SandboxWarmPool` |
 | CloudNativePG 1.30+ | Postgres 18 with pgvector as a declarative extension |
 | Gateway API + a live GatewayClass | The WebSocket upgrade the transcript stream needs |
-| A CNI that **enforces** NetworkPolicy | Two of the five enforcement layers |
+| A CNI that **enforces** NetworkPolicy | Two of the enforcement layers |
 
 Roughly 8 CPU and 16 GiB allocatable for a full demo, most of it warm-pool
 sandboxes sitting idle so no turn pays a cold start. Full detail, including the
@@ -189,7 +196,7 @@ provider credential.
 
 | Component | Choice | Why |
 |---|---|---|
-| Sandboxes | Agent Sandbox v0.5.6 (`agents.x-k8s.io/v1beta1`) | An emerging Kubernetes-native abstraction for isolated agent workloads |
+| Sandboxes | Agent Sandbox v1.0.4 (`agents.x-k8s.io/v1beta1`) | An emerging Kubernetes-native abstraction for isolated agent workloads |
 | Isolation | gVisor (`runsc`), `systrap` platform | Verified via `/proc/version`, never via a readiness check |
 | Database | CloudNativePG 1.30, Postgres 18 | pgvector arrives as a declarative **ImageVolume** extension, not a custom-baked image |
 | Ingress | Gateway API + Envoy Gateway | A real address, and the WebSocket upgrade the transcript stream needs |
@@ -218,6 +225,7 @@ make check            # lint, types, tests, chart validation, security scans
 make test             # unit tests: backend, sandbox runtime, frontend
 make test-integration # the assembled app against a real database
 make preflight        # is this cluster still able to support the controls?
+make smoke-router     # does the router refuse what it should? (needs the app deployed)
 make status           # cluster at a glance
 tilt up               # live-reload inner loop
 ```

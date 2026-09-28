@@ -7,10 +7,11 @@ requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.14.0",
     "asyncpg>=0.31.0",
+    "cryptography>=45",
     "fastapi>=0.135.2",
     "greenlet>=3.1.0",
     "httpx>=0.28.1",
-    "k8s-agent-sandbox>=0.5.6",
+    "k8s-agent-sandbox>=1.0.4,<2",
     "kubernetes-asyncio>=36.1.0",
     "langchain>=1.2.14",
     "langchain-openai>=1.1.12",

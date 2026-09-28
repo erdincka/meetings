@@ -25,7 +25,7 @@ TEMPLATES := deploy/cluster/templates/metallb-pool.yaml.tmpl \
 
 .DEFAULT_GOAL := help
 .PHONY: help preflight prerequisites smoke smoke-gvisor smoke-sandbox smoke-netpol \
-        smoke-pgvector status render images deploy deploy-observed seed demo \
+        smoke-router smoke-pgvector status render images deploy deploy-observed seed demo \
         operator-token verify-images observability observability-down \
         lint test test-integration test-frontend chart-validate check migrate-check security
 
@@ -60,6 +60,10 @@ smoke-sandbox: ## GATE 2: assert the Agent Sandbox control plane works end to en
 	@echo ">> gate 2: Agent Sandbox round trip"
 	@bash deploy/bootstrap/smoke-sandbox.sh $(KCTX)
 
+smoke-router: ## GATE 4: assert the router and admission refuse what they should (needs the app deployed)
+	@echo ">> gate 4: Sandbox Router and admission"
+	@bash deploy/bootstrap/smoke-router.sh $(KCTX)
+
 smoke-pgvector: ## Assert pgvector is really loaded via ImageVolume
 	@$(KUBECTL) -n meetings exec meetings-postgres-1 -c postgres -- \
 	  psql -U postgres -d meetings -tAc \
@@ -84,6 +88,7 @@ images: render ## Build the five images and push them to your registry
 
 deploy: render ## Install/upgrade the app (migrations run as a pre-upgrade hook)
 	@bash scripts/runtime-secret.sh
+	@bash scripts/router-keys.sh
 	@set -e; eval "$$(bash scripts/image-tags.sh)"; \
 	  $(HELM) upgrade --install meetings deploy/charts/meetings -n meetings --create-namespace \
 	    -f deploy/charts/meetings/values-cluster.yaml \
@@ -105,9 +110,13 @@ deploy-observed: deploy ## Deprecated alias for `deploy` (see OBSERVABILITY_ENAB
 	@echo "note: deploy-observed is now identical to deploy."
 	@echo "      Tracing and scraping follow OBSERVABILITY_ENABLED in deploy/cluster/cluster.env."
 
-seed: ## Load reference personas, documents and templates
+seed: ## Load reference personas, documents, templates and business metrics
 	$(KUBECTL) -n meetings exec deploy/meetings-backend -- \
 	  python -c "import asyncio; from scripts.seed import seed_data; asyncio.run(seed_data())"
+	@# The metrics schema as well. Without it query_business_metrics finds no
+	@# tables, and the personas granted it report an empty warehouse -- which
+	@# reads as a working tool with nothing to say, not as a missing seed step.
+	$(KUBECTL) -n meetings exec deploy/meetings-backend -- python -m scripts.seed_metrics
 
 operator-token: ## Print the operator and viewer tokens for this deployment
 	@echo -n "operator: "; $(KUBECTL) -n meetings get secret meetings-auth \

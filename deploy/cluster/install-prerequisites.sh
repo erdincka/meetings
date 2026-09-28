@@ -28,7 +28,7 @@ KUBECTL=${KUBECTL:-kubectl}
 HELM=${HELM:-helm}
 [ -n "${KCTX:-}" ] && { KUBECTL="$KUBECTL --context $KCTX"; HELM="$HELM --kube-context $KCTX"; }
 
-AGENT_SANDBOX_VER=${AGENT_SANDBOX_VER:-v0.5.6}
+AGENT_SANDBOX_VER=${AGENT_SANDBOX_VER:-v1.0.4}
 
 say() { printf '\n\033[1m>> %s\033[0m\n' "$*"; }
 
