@@ -247,13 +247,13 @@ export default function Home() {
                     </div>
                   )}
                   {status && !status.ready && (
-                    <div className="flex flex-col gap-2 p-3 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-200/70 text-[10px] leading-relaxed italic">
+                    <div className="flex flex-col gap-2 p-3 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-200 text-xs leading-relaxed">
                       <div className="flex items-start gap-2">
                         <AlertCircle className="size-3 shrink-0 mt-0.5" />
                         <span>System in unverified state. Simulation disabled until verified.</span>
                       </div>
                       {status.reasons && status.reasons.length > 0 && (
-                        <div className="pl-5 space-y-1 mt-1 opacity-80 not-italic font-mono">
+                        <div className="pl-5 space-y-1 mt-1 font-mono">
                           {status.reasons.map((reason: string, i: number) => (
                             <div key={i}>• {reason}</div>
                           ))}
