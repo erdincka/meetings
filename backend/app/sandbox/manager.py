@@ -287,7 +287,7 @@ class SandboxManager:
                 method=method,
                 path=path,
             ),
-            settings.SANDBOX_ROUTER_TOKEN_TTL_SECONDS,
+            settings.SANDBOX_ROUTER_GRANT_SECONDS,
         )
         return {
             "X-Sandbox-ID": sandbox_name,

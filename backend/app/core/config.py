@@ -136,7 +136,9 @@ class Settings(BaseSettings):
     SANDBOX_ROUTER_KEY_ID: str = "meetings"
     # Checked when a request starts, not while it streams, so this needs to
     # cover a connection attempt rather than a whole turn.
-    SANDBOX_ROUTER_TOKEN_TTL_SECONDS: int = 60
+    # How long a router token lasts. Not named *_TOKEN_*: scanners read that
+    # as a credential in a ConfigMap, and this is a duration.
+    SANDBOX_ROUTER_GRANT_SECONDS: int = 60
     # The longest a persona sandbox may exist, enforced by the controller rather
     # than by this process: a backend that dies and never returns must not
     # leave sandboxes running until somebody notices.
